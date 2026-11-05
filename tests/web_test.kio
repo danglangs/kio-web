@@ -1,4 +1,4 @@
-// Tests for web.kio: `kio run tests/web_test.kio` prints Int(0) when every check passes,
+// Tests for web.kio: `kio run tests/web_test.kio` prints 0 when every check passes,
 // or the number of the first failing check.
 mod web;
 

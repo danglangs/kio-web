@@ -1,0 +1,107 @@
+// Tests for json.kio: `kio run tests/json_test.kio` prints 0 when every check passes,
+// or the number of the first failing check.
+mod json;
+
+// The encoding of `s` parsed, or its error message.
+fn norm(s: Str) -> Str {
+    match json::parse(s) {
+        Ok(j) => json::encode(j),
+        Err(e) => e,
+    }
+}
+
+// A one-byte string.
+fn ch(c: Int) -> Str {
+    let mut b = "".to_bytes();
+    b.push(c);
+    b.to_str()
+}
+
+// The parsed value, or Null on an error.
+fn doc(s: Str) -> json::Json {
+    match json::parse(s) {
+        Ok(j) => j,
+        Err(_) => json::Json::Null,
+    }
+}
+
+fn nest(n: Int) -> Str {
+    let mut s = "";
+    for i in 0..n { s = s + "["; }
+    for i in 0..n { s = s + "]"; }
+    s
+}
+
+fn main() -> Int {
+    // literals and whitespace.
+    if norm(" \t" + ch(13) + "\n null ") != "null" { return 1; }
+    if norm("true") != "true" { return 2; }
+    if norm("false") != "false" { return 3; }
+    if norm("nul") != "expected 'null' at byte 0" { return 4; }
+    if norm("[1, tru]") != "expected 'true' at byte 4" { return 5; }
+    if norm("") != "expected a value at byte 0" { return 6; }
+    // numbers.
+    if norm("0") != "0" { return 7; }
+    if norm("-12") != "-12" { return 8; }
+    if norm("9223372036854775807") != "9223372036854775807" { return 9; }
+    if norm("-9223372036854775808") != "-9223372036854775808" { return 10; }
+    if norm("9223372036854775808") != "integer too large at byte 0" { return 11; }
+    if norm("-9223372036854775809") != "integer too large at byte 0" { return 12; }
+    if norm("1.5") != "floats are not supported at byte 1" { return 13; }
+    if norm("2e3") != "floats are not supported at byte 1" { return 14; }
+    if norm("-") != "expected a digit at byte 1" { return 15; }
+    if norm("01") != "expected end of input at byte 1" { return 16; }
+    // strings and escapes.
+    if norm("\"a\\\"\\\\\\/\\b\\f\\n\\r\\t\"") != "\"a\\\"\\\\/\\u0008\\u000c\\n\\u000d\\t\"" { return 17; }
+    if norm("\"\\u00e9\"") != "\"é\"" { return 18; }
+    if json::as_str(doc("\"\\u00e9\\u20ac\"")).unwrap_or("") != "é€" { return 19; }
+    if json::as_str(doc("\"\\ud83d\\ude00\"")).unwrap_or("").len() != 4 { return 20; }
+    if norm("\"\\ud83d\"") != "lone surrogate at byte 1" { return 21; }
+    if norm("\"\\ud83dx\"") != "lone surrogate at byte 1" { return 22; }
+    if norm("\"\\ude00\"") != "lone surrogate at byte 1" { return 23; }
+    if norm("\"\\ud83d\\u0041\"") != "lone surrogate at byte 1" { return 24; }
+    if norm("\"\\uzz00\"") != "expected 4 hex digits at byte 3" { return 25; }
+    if norm("\"\\q\"") != "invalid escape at byte 1" { return 26; }
+    if norm("\"abc") != "unterminated string starting at byte 0" { return 27; }
+    if norm("\"a\nb\"") != "unescaped control character at byte 2" { return 28; }
+    // arrays and objects.
+    if norm("[]") != "[]" { return 29; }
+    if norm("{}") != "{}" { return 30; }
+    if norm(" [ 1 , [ 2 ] , { \"a\" : null } ] ") != "[1,[2],{\"a\":null}]" { return 31; }
+    if norm("{\"b\":1,\"a\":2}") != "{\"a\":2,\"b\":1}" { return 32; }
+    if norm("{\"a\":1,\"a\":2}") != "{\"a\":2}" { return 33; }
+    if norm("[1 2]") != "expected ',' or ']' at byte 3" { return 34; }
+    if norm("[1,") != "expected a value at byte 3" { return 35; }
+    if norm("{\"a\" 1}") != "expected ':' at byte 5" { return 36; }
+    if norm("{1:2}") != "expected a string key at byte 1" { return 37; }
+    if norm("{\"a\":1 \"b\":2}") != "expected ',' or '}' at byte 7" { return 38; }
+    if norm("{\"a\":1,}") != "expected a string key at byte 7" { return 39; }
+    if norm("[1] x") != "expected end of input at byte 4" { return 40; }
+    // depth: 64 nested arrays parse, 65 do not.
+    if norm(nest(64)) != nest(64) { return 41; }
+    if norm(nest(65)) != "nesting deeper than 64 at byte 64" { return 42; }
+    // encoding escapes.
+    let raw = json::Json::Str("q\"b\\n\nt\tc" + ch(1));
+    if json::encode(raw) != "\"q\\\"b\\\\n\\nt\\tc\\u0001\"" { return 43; }
+    if json::as_str(doc(json::encode(raw))).unwrap_or("") != json::as_str(raw).unwrap_or("x") { return 44; }
+    // round trip of a mixed document.
+    let text = "{\"a\":[1,-2,true,null,\"x\\ny\"],\"b\":{\"c\":\"€\"}}";
+    if norm(text) != text { return 45; }
+    // accessors.
+    let j = doc("{\"n\":7,\"s\":\"hi\",\"t\":true,\"l\":[10,20]}");
+    if json::as_int(json::get(j, "n").unwrap_or(json::Json::Null)).unwrap_or(0) != 7 { return 46; }
+    if json::as_str(json::get(j, "s").unwrap_or(json::Json::Null)).unwrap_or("") != "hi" { return 47; }
+    if !json::as_bool(json::get(j, "t").unwrap_or(json::Json::Null)).unwrap_or(false) { return 48; }
+    let l = json::get(j, "l").unwrap_or(json::Json::Null);
+    if json::as_int(json::at(l, 1).unwrap_or(json::Json::Null)).unwrap_or(0) != 20 { return 49; }
+    if json::as_list(l).unwrap_or([]).len() != 2 { return 50; }
+    match json::at(l, 2) { Some(_) => { return 51; } None => {} }
+    match json::at(l, -1) { Some(_) => { return 52; } None => {} }
+    match json::get(j, "zz") { Some(_) => { return 53; } None => {} }
+    match json::get(l, "n") { Some(_) => { return 54; } None => {} }
+    match json::as_int(j) { Some(_) => { return 55; } None => {} }
+    match json::as_str(j) { Some(_) => { return 56; } None => {} }
+    match json::as_bool(j) { Some(_) => { return 57; } None => {} }
+    match json::as_list(j) { Some(_) => { return 58; } None => {} }
+    0
+}
