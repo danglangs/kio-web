@@ -126,8 +126,10 @@ pub fn json_str(s: Str) -> Str {
     out.to_str()
 }
 
-// Serve file `name` from `files`.
-pub fn file(files: Dir, name: Str) -> Response {
+// Serve the file a request path names, such as "/index.html", from `files`. The leading `/` is
+// dropped, since `Dir` paths are relative; the host refuses `..` and paths leading outside.
+pub fn file(files: Dir, path: Str) -> Response {
+    let name = strip_slash(path);
     match files.read(name) {
         Ok(b) => respond(200, ctype(name), b),
         Err(e) => match e {
@@ -135,6 +137,14 @@ pub fn file(files: Dir, name: Str) -> Response {
             _ => text(500, "read failed"),
         },
     }
+}
+
+pub fn strip_slash(path: Str) -> Str {
+    let b = path.to_bytes();
+    if b.len() == 0 || b[0] != 47 { return path; }
+    let mut out = "".to_bytes();
+    for i in 1..b.len() { out.push(b[i]); }
+    out.to_str()
 }
 
 fn ctype(name: Str) -> Str {

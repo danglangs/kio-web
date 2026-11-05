@@ -33,5 +33,8 @@ fn main() -> Int {
     if r.status != 201 { return 9; }
     if r.body.to_str() != "hi" { return 10; }
     if web::not_found().status != 404 { return 11; }
+    if web::strip_slash("/index.html") != "index.html" { return 12; }
+    if web::strip_slash("a/b") != "a/b" { return 13; }
+    if web::strip_slash("/") != "" { return 14; }
     0
 }
