@@ -132,9 +132,10 @@ pub fn file(files: Dir, path: Str) -> Response {
     let name = strip_slash(path);
     match files.read(name) {
         Ok(b) => respond(200, ctype(name), b),
+        // A missing, refused or escaping path is a 404, so a client cannot learn which paths exist.
         Err(e) => match e {
-            IoErr::NotFound => not_found(),
-            _ => text(500, "read failed"),
+            IoErr::TooLarge => text(500, "file too large"),
+            _ => not_found(),
         },
     }
 }
