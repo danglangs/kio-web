@@ -1,0 +1,48 @@
+# kio-web
+
+A small web framework written in [kio](https://github.com/danglangs/kiolang), a capability-typed language for code that AI agents write.
+
+The kio host accepts connections and hands each request to a fresh sandbox as raw parts: a capability `Incoming` with the method, target, headers and body, and `Outgoing` to send the response. kio-web defines `Request`, `Response` and the helpers on top, as axum does over hyper. A handler can touch only what its signature names, and kio's report says what that is:
+
+```rust
+mod web;
+
+fn main(req: Incoming, res: Outgoing, public: Dir) -> Result<(), WebErr> {
+    let r = web::request(req);
+    let out = match web::route(r, "GET", "/hello/:name") {
+        Some(p) => web::json(200, "{\"hello\": " + web::json_str(p.get(":name").unwrap_or("")) + "}"),
+        None => web::file(public, r.path),
+    };
+    web::send(res, out)
+}
+```
+
+```
+main : req body header_names header_values method target, res send, public read
+```
+
+**Status:** the library and its tests run today. Serving needs `kio run --listen`, kiolang web task W7.
+
+## Use
+
+kio has no package manager: copy [web.kio](web.kio) beside your app and write `mod web;`.
+
+| Function | Does |
+|---|---|
+| `request(req)`, `send(res, r)` | convert between the host's raw parts and `Request` / `Response` |
+| `route(r, method, pattern)` | match `"/hello/:name"`; `Some(params)` keyed by `":name"` |
+| `query(r)`, `decode(s)` | query parameters, percent-decoded |
+| `header(r, name)` | a header value; names are lowercase |
+| `text`, `json`, `respond`, `not_found` | build responses |
+| `json_str(s)` | a JSON string literal |
+| `file(dir, name)` | serve a file from a granted `Dir` |
+
+## Test
+
+```
+KIO=../kiolang/target/release/kio ./test.sh
+```
+
+## License
+
+MIT or Apache-2.0, as kiolang.

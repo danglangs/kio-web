@@ -1,0 +1,37 @@
+// Tests for web.kio: `kio run tests/web_test.kio` prints Int(0) when every check passes,
+// or the number of the first failing check.
+mod web;
+
+fn req(method: Str, path: Str, query: Str) -> web::Request {
+    let hs: List<web::Header> = [];
+    web::Request { method: method, path: path, query: query, headers: hs, body: "".to_bytes() }
+}
+
+fn main() -> Int {
+    // route: a path parameter and a mismatch.
+    match web::route(req("GET", "/hello/kio", ""), "GET", "/hello/:name") {
+        Some(p) => if p.get(":name").unwrap_or("") != "kio" { return 1; },
+        None => { return 2; }
+    }
+    match web::route(req("POST", "/hello/kio", ""), "GET", "/hello/:name") {
+        Some(_) => { return 3; }
+        None => {}
+    }
+    match web::route(req("GET", "/a/b", ""), "GET", "/a") {
+        Some(_) => { return 4; }
+        None => {}
+    }
+    // query and percent-decoding.
+    let q = web::query(req("GET", "/", "name=a%20b&x=1+2"));
+    if q.get("name").unwrap_or("") != "a b" { return 5; }
+    if q.get("x").unwrap_or("") != "1 2" { return 6; }
+    if web::decode("%41%zz%4") != "A%zz%4" { return 7; }
+    // JSON escaping.
+    if web::json_str("a\"b\\c") != "\"a\\\"b\\\\c\"" { return 8; }
+    // responses.
+    let r = web::text(201, "hi");
+    if r.status != 201 { return 9; }
+    if r.body.to_str() != "hi" { return 10; }
+    if web::not_found().status != 404 { return 11; }
+    0
+}
