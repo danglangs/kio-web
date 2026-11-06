@@ -1,6 +1,7 @@
 #!/bin/sh
 # Serve the notes app on a free port and exercise every route with curl. KIO=path/to/kio.
 set -e
+status=1
 KIO=${KIO:-kio}
 cd "$(dirname "$0")"
 cp ../../web.kio ../../json.kio .
@@ -8,7 +9,7 @@ data=$(mktemp -d)
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 "$KIO" run app.kio --dir notes="$data" --listen 127.0.0.1:$port >/dev/null 2>&1 &
 pid=$!
-trap 'kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf "$data" web.kio json.kio' EXIT
+trap 'kill $pid 2>/dev/null; wait $pid 2>/dev/null || true; rm -rf "$data" web.kio json.kio; exit $status' EXIT
 for i in $(seq 50); do
     curl -s -o /dev/null http://127.0.0.1:$port/ && break
     sleep 0.3
@@ -37,3 +38,4 @@ check PUT /notes/1 '{}' 501 'no `overwrite`'
 check DELETE /notes/1 "" 501 'no `delete`'
 check GET /nope "" 404 'not found'
 echo "notes ok ($n checks)"
+status=0
