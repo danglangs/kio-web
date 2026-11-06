@@ -1,3 +1,6 @@
 # Copies made by test.sh; the library is web.kio at the root.
 /tests/web.kio
 /examples/hello/web.kio
+/tests/json.kio
+/examples/notes/web.kio
+/examples/notes/json.kio
