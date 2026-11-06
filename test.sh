@@ -11,4 +11,5 @@ for t in web json; do
     [ "$out" = "0" ] || { echo "$t tests failed: check $out"; exit 1; }
 done
 "$KIO" check examples/hello/app.kio
+KIO="$KIO" examples/notes/test.sh
 echo ok
