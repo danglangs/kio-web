@@ -62,7 +62,7 @@ fn name(body: Str) -> Str {
 
 Numbers are integers; `1.5` and `2e3` are errors. Nesting deeper than 64 is an error. A repeated key keeps the last value.
 
-Parsing time grows with the square of the input today, since kio copies the input on every call: 10 KB parses in 0.13 s, 100 KB in 1.7 s and needs `--fuel 64000000000`. Copy-on-write values (kiolang P2) will fix this.
+Parsing time is linear in the input (kiolang P2a or later): 10 KB parses in 0.08 s and needs `--fuel 600000000`, 100 KB in 0.6 s and needs `--fuel 6000000000`.
 
 ## Test
 
