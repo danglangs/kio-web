@@ -15,6 +15,7 @@ for i in $(seq 50); do
     sleep 0.3
 done
 n=0
+pids=
 # check METHOD PATH BODY EXPECTED-STATUS EXPECTED-BODY-SUBSTRING
 check() {
     out=$(curl -s -w ' %{http_code}' -X "$1" ${3:+-d "$3"} http://127.0.0.1:$port$2)
@@ -34,8 +35,26 @@ check GET /notes/x "" 400 'integer'
 check POST /notes '{"title":"a"' 400 'at byte'
 check POST /notes '{"title":"a"}' 400 'field \"body'
 check POST /notes '{"title":1,"body":"x"}' 400 'field \"title'
-check PUT /notes/1 '{}' 501 'no `overwrite`'
-check DELETE /notes/1 "" 501 'no `delete`'
+check PUT /notes/1 '{"title":"a2","body":"edited"}' 200 '"body":"edited"'
+check GET /notes/1 "" 200 '"title":"a2"'
+check PUT /notes/9 '{"title":"a","body":"b"}' 404 'no note 9'
+check PUT /notes/1 '{"title":"a"}' 400 'field \"body'
+check PUT /notes/1 '{"title":' 400 'at byte'
+check DELETE /notes/1 "" 204 ''
+check GET /notes/1 "" 404 'no note 1'
+check DELETE /notes/1 "" 404 'no note 1'
+check POST /notes '{"title":"c","body":"third"}' 201 '"id":3'
+check GET /notes "" 200 '"id":2'
 check GET /nope "" 404 'not found'
+# Racing POSTs must all get distinct ids.
+for i in 1 2 3 4 5 6 7 8; do
+    curl -s -X POST -d '{"title":"r","body":"x"}' http://127.0.0.1:$port/notes >"$data.$i" &
+    pids="$pids $!"
+done
+wait $pids
+ids=$(cat "$data".[1-8] | grep -o '"id":[0-9]*' | sort -u | wc -l)
+rm -f "$data".[1-8]
+[ "$ids" -eq 8 ] || { echo "FAIL concurrent POST: $ids distinct ids, want 8"; exit 1; }
+n=$((n + 1))
 echo "notes ok ($n checks)"
 status=0

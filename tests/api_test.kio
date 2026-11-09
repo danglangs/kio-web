@@ -34,5 +34,24 @@ fn main() -> Int {
             if !x.body.to_str().contains("at byte") { return 14; }
         }
     }
+    match api::str_fields(req("{\"a\":\"x\",\"b\":\"y\"}"), ["b", "a"]) {
+        Ok(v) => { if v[0] != "y" || v[1] != "x" { return 15; } }
+        Err(_) => { return 16; }
+    }
+    match api::str_fields(req("{\"a\":\"x\"}"), ["a", "b"]) {
+        Ok(_) => { return 17; }
+        Err(x) => {
+            if x.status != 400 { return 18; }
+            if !x.body.to_str().contains("field \\\"b") { return 19; }
+        }
+    }
+    match api::str_fields(req("{\"a\":1}"), ["a"]) {
+        Ok(_) => { return 20; }
+        Err(x) => { if x.status != 400 { return 21; } }
+    }
+    match api::str_fields(req("{"), ["a"]) {
+        Ok(_) => { return 22; }
+        Err(x) => { if !x.body.to_str().contains("at byte") { return 23; } }
+    }
     0
 }

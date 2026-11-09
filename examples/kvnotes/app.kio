@@ -1,0 +1,197 @@
+// A notes JSON API over a granted Kv: notes under `note/<id>`, ids from a counter under `next`.
+// `kio run app.kio --kv notes=:memory: --listen 127.0.0.1:8080`
+mod web;
+mod json;
+mod api;
+
+fn main(req: Incoming, res: Outgoing, notes: Kv) -> Result<(), WebErr> {
+    let r = web::request(req);
+    web::send(res, handle(r, notes))
+}
+
+fn handle(r: web::Request, notes: Kv) -> web::Response {
+    match web::route(r, "POST", "/notes") {
+        Some(_) => { return create(r, notes); }
+        None => {}
+    }
+    match web::route(r, "GET", "/notes") {
+        Some(_) => { return list(notes); }
+        None => {}
+    }
+    match web::route(r, "GET", "/notes/:id") {
+        Some(p) => { return show(notes, p.get(":id").unwrap_or("")); }
+        None => {}
+    }
+    match web::route(r, "PUT", "/notes/:id") {
+        Some(p) => { return replace(r, notes, p.get(":id").unwrap_or("")); }
+        None => {}
+    }
+    match web::route(r, "DELETE", "/notes/:id") {
+        Some(p) => { return delete(notes, p.get(":id").unwrap_or("")); }
+        None => {}
+    }
+    web::not_found()
+}
+
+fn note(id: Int, title: Str, body: Str) -> json::Json {
+    let mut o: Map<Str, json::Json> = Map::new();
+    o.insert("id", json::Json::Num(id));
+    o.insert("title", json::Json::Str(title));
+    o.insert("body", json::Json::Str(body));
+    json::Json::Obj(o)
+}
+
+fn io_error() -> web::Response { api::error(500, "storage error") }
+
+fn key(id: Int) -> Str { "note/" + id.to_str() }
+
+// The id a key stands for: "note/7" is 7.
+fn id_of(k: Str) -> Option<Int> { k.split("/")[1].parse_int() }
+
+// `v` in ascending order. Keys sort as text ("note/10" before "note/2").
+fn sorted(v: List<Int>) -> List<Int> {
+    let mut out: List<Int> = [];
+    for x in v {
+        let mut next: List<Int> = [];
+        let mut placed = false;
+        for y in out {
+            if !placed && x < y {
+                next.push(x);
+                placed = true;
+            }
+            next.push(y);
+        }
+        if !placed { next.push(x); }
+        out = next;
+    }
+    out
+}
+
+fn parse_id(id: Str) -> Result<Int, web::Response> {
+    match id.parse_int() {
+        Some(n) => Ok(n),
+        None => Err(api::error(400, "note id must be an integer")),
+    }
+}
+
+// POST /notes: validate the body, then store it under the next id.
+fn create(r: web::Request, notes: Kv) -> web::Response {
+    let f = match api::str_fields(r, ["title", "body"]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    let id = match take_id(notes) {
+        Ok(id) => id,
+        Err(_) => return io_error(),
+    };
+    match notes.set(key(id), json::encode(note(id, f[0], f[1])).to_bytes()) {
+        Ok(_) => api::json(201, note(id, f[0], f[1])),
+        Err(_) => io_error(),
+    }
+}
+
+// Claim the next id: read the counter, swap it to +1, and read again if another request got there.
+fn take_id(notes: Kv) -> Result<Int, KvErr> {
+    for _try in 0..1000 {
+        let old = notes.get("next")?;
+        let id = match old {
+            Some(b) => b.to_str().parse_int().unwrap_or(1),
+            None => 1,
+        };
+        if notes.swap("next", old, Some((id + 1).to_str().to_bytes()))? { return Ok(id); }
+    }
+    Err(KvErr::Full)
+}
+
+fn load(notes: Kv, id: Int) -> Option<json::Json> {
+    match notes.get(key(id)) {
+        Ok(found) => match found {
+            Some(b) => match json::parse(b.to_str()) {
+                Ok(j) => Some(j),
+                Err(_) => None,
+            },
+            None => None,
+        },
+        Err(_) => None,
+    }
+}
+
+fn show(notes: Kv, id: Str) -> web::Response {
+    let n = match parse_id(id) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    match load(notes, n) {
+        Some(j) => api::json(200, j),
+        None => api::error(404, "no note " + id),
+    }
+}
+
+// GET /notes: every note, in id order.
+fn list(notes: Kv) -> web::Response {
+    let keys = match notes.keys("note/") {
+        Ok(v) => v,
+        Err(_) => return io_error(),
+    };
+    let mut found: List<Int> = [];
+    for k in keys {
+        match id_of(k) {
+            Some(id) => { found.push(id); }
+            None => {}
+        }
+    }
+    let mut all: List<json::Json> = [];
+    for id in sorted(found) {
+        match load(notes, id) {
+            Some(j) => { all.push(j); }
+            None => {}
+        }
+    }
+    api::json(200, json::Json::Arr(all))
+}
+
+// PUT /notes/:id: replace an existing note. Swapping against the value just read means a note
+// deleted in between stays deleted.
+fn replace(r: web::Request, notes: Kv, id: Str) -> web::Response {
+    let n = match parse_id(id) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let old = match notes.get(key(n)) {
+        Ok(v) => v,
+        Err(_) => return io_error(),
+    };
+    if old.is_none() { return api::error(404, "no note " + id); }
+    let f = match api::str_fields(r, ["title", "body"]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    let new = Some(json::encode(note(n, f[0], f[1])).to_bytes());
+    match notes.swap(key(n), old, new) {
+        Ok(done) => {
+            if done { return api::json(200, note(n, f[0], f[1])); }
+            replace(r, notes, id)
+        }
+        Err(_) => io_error(),
+    }
+}
+
+// DELETE /notes/:id
+fn delete(notes: Kv, id: Str) -> web::Response {
+    let n = match parse_id(id) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let old = match notes.get(key(n)) {
+        Ok(v) => v,
+        Err(_) => return io_error(),
+    };
+    if old.is_none() { return api::error(404, "no note " + id); }
+    match notes.swap(key(n), old, None) {
+        Ok(done) => {
+            if done { return web::respond(204, "text/plain", "".to_bytes()); }
+            delete(notes, id)
+        }
+        Err(_) => io_error(),
+    }
+}

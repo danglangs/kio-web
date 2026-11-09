@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run the kio-web tests and check the example. Needs `kio` on PATH, or KIO=path/to/kio.
+# Run the kio-web tests and the examples. Needs `kio` on PATH, or KIO=path/to/kio.
 set -e
 KIO=${KIO:-kio}
 cd "$(dirname "$0")"
@@ -12,4 +12,5 @@ for t in web json api; do
 done
 "$KIO" check examples/hello/app.kio
 KIO="$KIO" examples/notes/test.sh
+KIO="$KIO" examples/kvnotes/test.sh
 echo ok

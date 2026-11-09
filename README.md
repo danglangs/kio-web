@@ -74,6 +74,7 @@ Copy [api.kio](api.kio) too and declare `mod web; mod json; mod api;`. It builds
 | `error(status, msg)` | respond with `{"error": msg}` |
 | `body(r)` | the request body as `Ok(Json)`, or `Err(response)`, a 400 carrying the parse message |
 | `str_field(j, key)`, `int_field(j, key)` | an object field, if present with that type |
+| `str_fields(r, keys)` | the body's string fields in order as `Ok(List<Str>)`, or a 400 naming the bad JSON or missing field |
 
 ```rust
 fn create(r: web::Request) -> web::Response {
@@ -85,7 +86,7 @@ fn create(r: web::Request) -> web::Response {
 }
 ```
 
-[examples/notes](examples/notes) is a full app built this way.
+Two full apps are built this way: [examples/notes](examples/notes) stores notes as files in a `Dir` (list, create, write, remove), and [examples/kvnotes](examples/kvnotes) is the same API over a `Kv` with a `swap`-based id counter.
 
 ## Test
 

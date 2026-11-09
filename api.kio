@@ -27,3 +27,17 @@ pub fn str_field(j: json::Json, key: Str) -> Option<Str> {
 pub fn int_field(j: json::Json, key: Str) -> Option<Int> {
     json::as_int(json::get(j, key)?)
 }
+
+// The string fields `keys` of the request body, in that order, or a 400 response naming the
+// first problem: bad JSON, or a field that is missing or not a string.
+pub fn str_fields(r: web::Request, keys: List<Str>) -> Result<List<Str>, web::Response> {
+    let j = body(r)?;
+    let mut out: List<Str> = [];
+    for k in keys {
+        match str_field(j, k) {
+            Some(s) => { out.push(s); }
+            None => { return Err(error(400, "missing string field \"" + k + "\"")); }
+        }
+    }
+    Ok(out)
+}
