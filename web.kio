@@ -243,8 +243,7 @@ pub fn html_escape(s: Str) -> Str {
         if e == "" {
             out.push(c);
         } else {
-            let eb = e.to_bytes();
-            for j in 0..eb.len() { out.push(eb[j]); }
+            out.extend(e.to_bytes());
         }
     }
     out.to_str()

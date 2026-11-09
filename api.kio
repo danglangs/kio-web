@@ -73,12 +73,7 @@ pub fn page<T>(xs: List<T>, r: web::Request) -> Result<Page<T>, web::Response> {
     let q = web::query(r);
     let offset = count(q, "offset", 0, 1000000000)?;
     let limit = count(q, "limit", 50, 500)?;
-    let mut items: List<T> = [];
-    let mut i = offset;
-    while i < xs.len() && items.len() < limit {
-        items.push(xs[i]);
-        i += 1;
-    }
+    let items = xs.slice(offset.min(xs.len()), (offset + limit).min(xs.len()));
     Ok(Page { items: items, total: xs.len(), offset: offset, limit: limit })
 }
 

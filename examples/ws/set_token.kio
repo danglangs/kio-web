@@ -1,4 +1,4 @@
-// Store the token WebSocket clients must send, read from the file `token` in `secret`:
+// Store the SHA-256 hex of the token WebSocket clients must send (never the token itself), read from the file `token` in `secret`:
 // `kio run set_token.kio --dir secret=path/to/dir --kv auth=auth.kv`
 // The server reads the same store; it can only `get` from it.
 fn main(secret: Dir, auth: Kv) -> Str {
@@ -7,7 +7,7 @@ fn main(secret: Dir, auth: Kv) -> Str {
         Err(_) => return "no file `token` in secret",
     };
     if token == "" { return "the token is empty"; }
-    match auth.set("token", token.to_bytes()) {
+    match auth.set("token", token.sha256().to_hex().to_bytes()) {
         Ok(_) => "token set",
         Err(_) => "cannot store the token",
     }

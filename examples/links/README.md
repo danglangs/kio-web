@@ -18,7 +18,7 @@ kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --li
 | `POST /api/links` | `{"url": .., "slug": optional}`: 201, 400 (bad JSON, URL or slug), 409 (slug taken); token needed |
 | `DELETE /api/links/<slug>` | 204 or 404; token needed |
 
-A URL must be `http://` or `https://` with a host, at most 2048 bytes, with no spaces or control characters. A slug is 1 to 64 of `A-Z a-z 0-9 _ -`, not `api` or `static`; without one, the next value of a counter in base62 names the link. The token is the key `token` in `auth`, compared against `Authorization: Bearer <token>`; a missing or wrong one is a 401.
+A URL must be `http://` or `https://` with a host, at most 2048 bytes, with no spaces or control characters. A slug is 1 to 64 of `A-Z a-z 0-9 _ -`, not `api` or `static`; without one, the next value of a counter in base62 names the link. The key `token` in `auth` holds the SHA-256 hex of the token, never the token itself; the app hashes the presented `Authorization: Bearer <token>` and compares with `ct_eq` (constant time). A missing or wrong one is a 401. The URL scheme is matched case-insensitively (`HTTPS://x` is accepted and stored as given).
 
 ```
 $ curl -H "Authorization: Bearer $TOKEN" -d '{"url":"https://example.com/docs","slug":"docs"}' localhost:8080/api/links
@@ -35,21 +35,21 @@ The token is set by a separate program, so the server can only read it:
 $ kio check set_token.kio
 main : secret read, auth set
 $ kio check app.kio | grep -v ': none' | grep -v '^web::\|^api::'
-all_links        : links get keys
-authorized       : auth get
-claim            : links swap
-create           : links get swap
-delete           : links get swap
-follow           : links get swap
-generated        : links get swap
-handle           : links get keys swap, auth get, assets read
-home             : links get keys
-list             : links get keys
-load             : links get
-main             : req body header_names header_values method target, res send, links get keys swap, auth get, assets read
-take_id          : links get swap
+all_links         : links get keys
+authorized        : auth get
+claim             : links swap
+create            : links get swap
+delete            : links get swap
+follow            : links get swap
+generated         : links get swap
+handle            : links get keys swap, auth get, assets read
+home              : links get keys
+list              : links get keys
+load              : links get
+main              : req body header_names header_values method target, res send, links get keys swap, auth get, assets read
+take_id           : links get swap
 ```
 
-The server reads and swaps links, reads the token and reads files under `static/`. It cannot write the token, write files, or make requests.
+The server reads and swaps links, reads the token hash and reads files under `static/`. It cannot write the token hash, write files, or make requests.
 
 `./test.sh` sets a token, serves the app on a free port and checks every route with curl: auth failures, bad JSON and URLs, taken and reserved slugs, redirects and hit counts, 20 concurrent hits counted exactly, paging and sort order, HTML escaping, static files, HEAD, delete, and a restart on the same store with links and counts intact.

@@ -7,7 +7,7 @@
 //   POST   /api/links         {"url": .., "slug": optional} creates a link (bearer token)
 //   DELETE /api/links/<slug>  removes a link (bearer token)
 // A link is stored under `link/<slug>` as {"url", "hits"}; `next` is the counter that names
-// links created without a slug. The token is the key `token` in `auth` (set_token.kio stores it).
+// links created without a slug. The key `token` in `auth` is the SHA-256 hex of the API token (set_token.kio stores it).
 mod web;
 mod api;
 
@@ -47,30 +47,18 @@ fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir) -> web::Response {
 
 // ---- auth
 
-// Whether the request carries `authorization: Bearer <token>` for the stored token.
-// With no token stored, no one is let in.
+// Whether the request carries `authorization: Bearer <token>` whose SHA-256 is the stored hex
+// digest (set_token.kio stores it; the token itself is never stored). With none stored, no one
+// is let in. `ct_eq` takes the same time wherever the digests differ.
 fn authorized(r: web::Request, auth: Kv) -> Bool {
     let want = match auth.get("token") {
-        Ok(Some(t)) => t.to_str(),
+        Ok(Some(t)) => t,
         _ => return false,
     };
     match web::bearer(r) {
-        Some(got) => want != "" && same(got, want),
+        Some(got) => want.len() > 0 && got.sha256().to_hex().ct_eq(want.to_str()),
         None => false,
     }
-}
-
-// `a == b`, looking at every byte whatever the first difference, so the time does not tell a
-// client how much of a guessed token was right.
-fn same(a: Str, b: Str) -> Bool {
-    let x = a.to_bytes();
-    let y = b.to_bytes();
-    if x.len() != y.len() { return false; }
-    let mut diff = 0;
-    for i in 0..x.len() {
-        if x[i] != y[i] { diff += 1; }
-    }
-    diff == 0
 }
 
 // ---- storage
@@ -217,13 +205,13 @@ fn delete(links: Kv, slug: Str) -> Result<web::Response, web::Response> {
 // GET /: the top 20 links as an HTML table.
 fn home(links: Kv) -> Result<web::Response, web::Response> {
     let top = by_hits(all_links(links)?);
-    let mut rows = "";
-    for i in 0..min(top.len(), 20) {
-        let l = top[i];
+    let mut lines: List<Str> = [];
+    for l in top.slice(0, top.len().min(20)) {
         let slug = web::html_escape(l.slug);
-        rows = rows + "<tr><td><a href=\"/" + slug + "\">/" + slug + "</a></td><td>" + web::html_escape(l.url)
-            + "</td><td class=\"hits\">" + l.hits.to_str() + "</td></tr>\n";
+        lines.push("<tr><td><a href=\"/" + slug + "\">/" + slug + "</a></td><td>" + web::html_escape(l.url)
+            + "</td><td class=\"hits\">" + l.hits.to_str() + "</td></tr>\n");
     }
+    let mut rows = lines.join("");
     if rows == "" { rows = "<tr><td colspan=\"3\">No links yet.</td></tr>\n"; }
     Ok(web::html(200, "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Links</title>"
         + "<link rel=\"stylesheet\" href=\"/static/style.css\"></head>\n<body><h1>Top links</h1>\n"
@@ -246,9 +234,10 @@ fn view(l: Link) -> Json {
 // control characters (it goes into a `location` header as is).
 fn url_problem(url: Str) -> Option<Str> {
     if url.len() > 2048 { return Some("url is longer than 2048 bytes"); }
-    let rest = match url.strip_prefix("https://") {
+    let lower = url.to_lowercase();
+    let rest = match lower.strip_prefix("https://") {
         Some(r) => r,
-        None => match url.strip_prefix("http://") {
+        None => match lower.strip_prefix("http://") {
             Some(r) => r,
             None => return Some("url must start with http:// or https://"),
         },
@@ -291,37 +280,7 @@ fn base62(n: Int) -> Str {
 
 // Most hits first; equal hits by slug.
 fn by_hits(xs: List<Link>) -> List<Link> {
-    sort_by(xs, |a, b| a.hits > b.hits || (a.hits == b.hits && a.slug < b.slug))
+    let mut out = xs;
+    out.sort_by(|a, b| a.hits > b.hits || (a.hits == b.hits && a.slug < b.slug));
+    out
 }
-
-// `xs` ordered by `before`, stable: a bottom-up merge sort.
-fn sort_by<T>(xs: List<T>, before: fn(T, T) -> Bool) -> List<T> {
-    let n = xs.len();
-    let mut a = xs;
-    let mut width = 1;
-    while width < n {
-        let mut b: List<T> = [];
-        let mut lo = 0;
-        while lo < n {
-            let mid = min(lo + width, n);
-            let hi = min(lo + 2 * width, n);
-            let mut i = lo;
-            let mut j = mid;
-            while i < mid || j < hi {
-                if j >= hi || (i < mid && !before(a[j], a[i])) {
-                    b.push(a[i]);
-                    i += 1;
-                } else {
-                    b.push(a[j]);
-                    j += 1;
-                }
-            }
-            lo = hi;
-        }
-        a = b;
-        width = width * 2;
-    }
-    a
-}
-
-fn min(a: Int, b: Int) -> Int { if a < b { a } else { b } }

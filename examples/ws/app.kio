@@ -25,14 +25,14 @@ fn main(msg: WsMessage, conn: WsSend, auth: Kv, counts: Kv) -> Result<(), WsErr>
     }
 }
 
-// Whether the upgrade carried the stored token. With no token stored, no one is let in.
+// Whether the upgrade carried the token whose SHA-256 hex is stored (constant-time compare). With none stored, no one is let in.
 fn authorized(msg: WsMessage, auth: Kv) -> Bool {
     let want = match auth.get("token") {
         Ok(Some(t)) => t.to_str(),
         _ => return false,
     };
     match web::ws_bearer(msg) {
-        Some(got) => want != "" && got == want,
+        Some(got) => want != "" && got.sha256().to_hex().ct_eq(want),
         None => false,
     }
 }

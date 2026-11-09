@@ -67,6 +67,8 @@ n=$((n + 1))
 check POST /api/links '{"url":' 400 'at byte' "$auth"
 check POST /api/links '[1]' 400 'field \"url' "$auth"
 check POST /api/links '{"url":5}' 400 'field \"url' "$auth"
+check POST /api/links '{"url":"HTTPS://Upper.example/Path","slug":"upper"}' 201 '"url":"HTTPS://Upper.example/Path"' "$auth"
+check DELETE /api/links/upper "" 204 '' "$auth"
 check POST /api/links '{"url":"ftp://a.example/"}' 400 'http:// or https://' "$auth"
 check POST /api/links '{"url":"javascript:alert(1)"}' 400 'http:// or https://' "$auth"
 check POST /api/links '{"url":"https:///path"}' 400 'no host' "$auth"
