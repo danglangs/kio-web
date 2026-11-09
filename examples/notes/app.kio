@@ -9,13 +9,28 @@ fn main(req: Incoming, res: Outgoing, notes: Dir) -> Result<(), WebErr> {
     web::send(res, handle(r, notes))
 }
 
+// What a request asks for. Handlers use the app's capability, so they cannot be function values
+// in a route table (rule 1); the table holds these ids and `handle` calls the named function.
+enum Act { Create, List, Show, Replace, Delete }
+
+fn routes() -> List<web::Route<Act>> {
+    [web::post("/notes", Act::Create), web::get("/notes", Act::List), web::get("/notes/:id", Act::Show),
+     web::put("/notes/:id", Act::Replace), web::delete("/notes/:id", Act::Delete)]
+}
+
 fn handle(r: web::Request, notes: Dir) -> web::Response {
-    if let Some(_) = web::route(r, "POST", "/notes") { return create(r, notes); }
-    if let Some(_) = web::route(r, "GET", "/notes") { return list(notes); }
-    if let Some(p) = web::route(r, "GET", "/notes/:id") { return show(notes, p.get(":id").unwrap_or("")); }
-    if let Some(p) = web::route(r, "PUT", "/notes/:id") { return replace(r, notes, p.get(":id").unwrap_or("")); }
-    if let Some(p) = web::route(r, "DELETE", "/notes/:id") { return delete(notes, p.get(":id").unwrap_or("")); }
-    web::not_found()
+    let m = match web::dispatch(routes(), r) {
+        Some(m) => m,
+        None => return web::not_found(),
+    };
+    let id = web::param(m, "id");
+    match m.action {
+        Act::Create => create(r, notes),
+        Act::List => list(r, notes),
+        Act::Show => show(notes, id),
+        Act::Replace => replace(r, notes, id),
+        Act::Delete => delete(notes, id),
+    }
 }
 
 fn file(id: Int) -> Str { id.to_str() + ".json" }
@@ -37,10 +52,7 @@ fn id_of(name: Str) -> Option<Int> {
 
 // Every note id, from one directory listing.
 fn ids(notes: Dir) -> Result<List<Int>, IoErr> {
-    let mut out: List<Int> = [];
-    for name in notes.list("")? {
-        if let Some(id) = id_of(name) { out.push(id); }
-    }
+    let mut out = api::flatten(notes.list("")?.map(id_of));
     out.sort();
     Ok(out)
 }
@@ -52,13 +64,6 @@ fn next_id(notes: Dir) -> Result<Int, IoErr> {
         if id > top { top = id; }
     }
     Ok(top + 1)
-}
-
-fn parse_id(id: Str) -> Result<Int, web::Response> {
-    match id.parse_int() {
-        Some(n) => Ok(n),
-        None => Err(api::error(400, "note id must be an integer")),
-    }
 }
 
 // POST /notes: validate the body, then create the file under the next id.
@@ -98,7 +103,7 @@ fn load(notes: Dir, id: Int) -> Option<json::Json> {
 }
 
 fn show(notes: Dir, id: Str) -> web::Response {
-    let n = match parse_id(id) {
+    let n = match api::int_param(id, "note id") {
         Ok(n) => n,
         Err(e) => return e,
     };
@@ -108,14 +113,14 @@ fn show(notes: Dir, id: Str) -> web::Response {
     }
 }
 
-// GET /notes: every note, in id order.
-fn list(notes: Dir) -> web::Response {
-    let mut all: List<json::Json> = [];
+// GET /notes: notes in id order; ?offset= and ?limit= pick a page.
+fn list(r: web::Request, notes: Dir) -> web::Response {
     let found = match ids(notes) {
         Ok(v) => v,
         Err(_) => return io_error(),
     };
-    for id in found {
+    let mut all: List<json::Json> = [];
+    for id in api::page(found, r).items {
         if let Some(j) = load(notes, id) { all.push(j); }
     }
     api::json(200, json::Json::Arr(all))
@@ -123,7 +128,7 @@ fn list(notes: Dir) -> web::Response {
 
 // PUT /notes/:id: replace an existing note.
 fn replace(r: web::Request, notes: Dir, id: Str) -> web::Response {
-    let n = match parse_id(id) {
+    let n = match api::int_param(id, "note id") {
         Ok(n) => n,
         Err(e) => return e,
     };
@@ -144,7 +149,7 @@ fn replace(r: web::Request, notes: Dir, id: Str) -> web::Response {
 
 // DELETE /notes/:id
 fn delete(notes: Dir, id: Str) -> web::Response {
-    let n = match parse_id(id) {
+    let n = match api::int_param(id, "note id") {
         Ok(n) => n,
         Err(e) => return e,
     };

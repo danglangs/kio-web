@@ -7,6 +7,13 @@ fn req(method: Str, path: Str, query: Str) -> web::Request {
     web::Request { method: method, path: path, query: query, headers: hs, body: "".to_bytes() }
 }
 
+enum Act { Home, List, Show, Make }
+
+fn table() -> List<web::Route<Act>> {
+    [web::get("/", Act::Home), web::get("/notes", Act::List), web::get("/notes/:id", Act::Show),
+     web::post("/notes", Act::Make)]
+}
+
 fn main() -> Int {
     // route: a path parameter and a mismatch.
     match web::route(req("GET", "/hello/kio", ""), "GET", "/hello/:name") {
@@ -36,5 +43,29 @@ fn main() -> Int {
     if web::strip_slash("/index.html") != "index.html" { return 12; }
     if web::strip_slash("a/b") != "a/b" { return 13; }
     if web::strip_slash("/") != "" { return 14; }
+    // dispatch: method, path, params, order, no match.
+    match web::dispatch(table(), req("GET", "/notes/7", "")) {
+        Some(m) => {
+            if m.action != Act::Show { return 15; }
+            if web::param(m, "id") != "7" { return 16; }
+        }
+        None => { return 17; }
+    }
+    match web::dispatch(table(), req("POST", "/notes", "")) {
+        Some(m) => { if m.action != Act::Make { return 18; } }
+        None => { return 19; }
+    }
+    match web::dispatch(table(), req("GET", "/", "")) {
+        Some(m) => { if m.action != Act::Home { return 20; } }
+        None => { return 21; }
+    }
+    match web::dispatch(table(), req("DELETE", "/notes/7", "")) { Some(_) => { return 22; } None => {} }
+    match web::dispatch(table(), req("GET", "/nope", "")) { Some(_) => { return 23; } None => {} }
+    let first = [web::get("/a/:x", 1), web::get("/a/b", 2)];
+    match web::dispatch(first, req("GET", "/a/b", "")) {
+        Some(m) => { if m.action != 1 || web::param(m, "x") != "b" { return 24; } }
+        None => { return 25; }
+    }
+    if web::param(web::Matched { action: 0, params: Map::new() }, "id") != "" { return 26; }
     0
 }

@@ -9,13 +9,28 @@ fn main(req: Incoming, res: Outgoing, notes: Kv) -> Result<(), WebErr> {
     web::send(res, handle(r, notes))
 }
 
+// What a request asks for. Handlers use the app's capability, so they cannot be function values
+// in a route table (rule 1); the table holds these ids and `handle` calls the named function.
+enum Act { Create, List, Show, Replace, Delete }
+
+fn routes() -> List<web::Route<Act>> {
+    [web::post("/notes", Act::Create), web::get("/notes", Act::List), web::get("/notes/:id", Act::Show),
+     web::put("/notes/:id", Act::Replace), web::delete("/notes/:id", Act::Delete)]
+}
+
 fn handle(r: web::Request, notes: Kv) -> web::Response {
-    if let Some(_) = web::route(r, "POST", "/notes") { return create(r, notes); }
-    if let Some(_) = web::route(r, "GET", "/notes") { return list(notes); }
-    if let Some(p) = web::route(r, "GET", "/notes/:id") { return show(notes, p.get(":id").unwrap_or("")); }
-    if let Some(p) = web::route(r, "PUT", "/notes/:id") { return replace(r, notes, p.get(":id").unwrap_or("")); }
-    if let Some(p) = web::route(r, "DELETE", "/notes/:id") { return delete(notes, p.get(":id").unwrap_or("")); }
-    web::not_found()
+    let m = match web::dispatch(routes(), r) {
+        Some(m) => m,
+        None => return web::not_found(),
+    };
+    let id = web::param(m, "id");
+    match m.action {
+        Act::Create => create(r, notes),
+        Act::List => list(r, notes),
+        Act::Show => show(notes, id),
+        Act::Replace => replace(r, notes, id),
+        Act::Delete => delete(notes, id),
+    }
 }
 
 fn note(id: Int, title: Str, body: Str) -> json::Json {
@@ -32,13 +47,6 @@ fn key(id: Int) -> Str { "note/" + id.to_str() }
 
 // The id a key stands for: "note/7" is 7.
 fn id_of(k: Str) -> Option<Int> { k.strip_prefix("note/")?.parse_int() }
-
-fn parse_id(id: Str) -> Result<Int, web::Response> {
-    match id.parse_int() {
-        Some(n) => Ok(n),
-        None => Err(api::error(400, "note id must be an integer")),
-    }
-}
 
 // POST /notes: validate the body, then store it under the next id.
 fn create(r: web::Request, notes: Kv) -> web::Response {
@@ -81,7 +89,7 @@ fn load(notes: Kv, id: Int) -> Option<json::Json> {
 }
 
 fn show(notes: Kv, id: Str) -> web::Response {
-    let n = match parse_id(id) {
+    let n = match api::int_param(id, "note id") {
         Ok(n) => n,
         Err(e) => return e,
     };
@@ -91,19 +99,16 @@ fn show(notes: Kv, id: Str) -> web::Response {
     }
 }
 
-// GET /notes: every note, in id order.
-fn list(notes: Kv) -> web::Response {
+// GET /notes: notes in id order; ?offset= and ?limit= pick a page.
+fn list(r: web::Request, notes: Kv) -> web::Response {
     let keys = match notes.keys("note/") {
         Ok(v) => v,
         Err(_) => return io_error(),
     };
-    let mut found: List<Int> = [];
-    for k in keys {
-        if let Some(id) = id_of(k) { found.push(id); }
-    }
+    let mut found = api::flatten(keys.map(id_of));
     found.sort();
     let mut all: List<json::Json> = [];
-    for id in found {
+    for id in api::page(found, r).items {
         if let Some(j) = load(notes, id) { all.push(j); }
     }
     api::json(200, json::Json::Arr(all))
@@ -112,7 +117,7 @@ fn list(notes: Kv) -> web::Response {
 // PUT /notes/:id: replace an existing note. Swapping against the value just read means a note
 // deleted in between stays deleted.
 fn replace(r: web::Request, notes: Kv, id: Str) -> web::Response {
-    let n = match parse_id(id) {
+    let n = match api::int_param(id, "note id") {
         Ok(n) => n,
         Err(e) => return e,
     };
@@ -137,7 +142,7 @@ fn replace(r: web::Request, notes: Kv, id: Str) -> web::Response {
 
 // DELETE /notes/:id
 fn delete(notes: Kv, id: Str) -> web::Response {
-    let n = match parse_id(id) {
+    let n = match api::int_param(id, "note id") {
         Ok(n) => n,
         Err(e) => return e,
     };

@@ -31,11 +31,33 @@ kio has no package manager: copy [web.kio](web.kio) beside your app and write `m
 |---|---|
 | `request(req)`, `send(res, r)` | convert between the host's raw parts and `Request` / `Response` |
 | `route(r, method, pattern)` | match `"/hello/:name"`; `Some(params)` keyed by `":name"` |
+| `get`, `post`, `put`, `delete`, `dispatch(routes, r)`, `param(m, name)` | a route table; see Routing |
 | `query(r)`, `decode(s)` | query parameters, percent-decoded |
 | `header(r, name)` | a header value; names are lowercase |
 | `text`, `json`, `respond`, `not_found` | build responses |
 | `json_str(s)` | a JSON string literal |
 | `file(dir, name)` | serve a file from a granted `Dir` |
+
+## Routing
+
+`dispatch` replaces a chain of `if let Some(p) = web::route(..)`. A table is a `List<web::Route<A>>` of the app's own action values; `dispatch` returns the first match as `Option<Matched<A>>`, with `m.action` and the path parameters (`web::param(m, "id")`).
+
+```rust
+enum Act { List, Show }
+
+fn handle(r: web::Request, notes: Dir) -> web::Response {
+    let routes = [web::get("/notes", Act::List), web::get("/notes/:id", Act::Show)];
+    match web::dispatch(routes, r) {
+        Some(m) => match m.action {
+            Act::List => list(notes),
+            Act::Show => show(notes, web::param(m, "id")),
+        },
+        None => web::not_found(),
+    }
+}
+```
+
+**Why the table holds an enum, not handlers.** kio's rule 1: a function value or closure cannot take, capture or return a capability, so `Route { handler: fn(Request) -> Response }` cannot hold a handler that needs the app's `Dir` or `Kv`. The table is pure data and `handle` calls the named function, passing only the capability it needs. The authority report stays exact: `list` shows `notes list read`, `show` shows `notes read`, and `routes`/`dispatch` show none. Handlers that need no capability could be function values, but one mixed style would split the table, so the examples use one enum.
 
 ## JSON
 
@@ -75,6 +97,9 @@ Copy [api.kio](api.kio) too and declare `mod web; mod json; mod api;`. It builds
 | `error(status, msg)` | respond with `{"error": msg}` |
 | `body(r)` | the request body as `Ok(Json)`, or `Err(response)`, a 400 carrying the parse message |
 | `str_field(j, key)`, `int_field(j, key)` | an object field, if present with that type |
+| `int_param(s, what)` | `s` as `Ok(Int)`, or a 400 saying `what` must be an integer |
+| `first(xs)`, `flatten(opts)` | the first element; the present values of a `List<Option<T>>` |
+| `page(xs, r)` | `Page<T> { items, total, offset }` from the query's `offset` and `limit` |
 | `str_fields(r, keys)` | the body's string fields in order as `Ok(List<Str>)`, or a 400 naming the bad JSON or missing field |
 
 ```rust

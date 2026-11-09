@@ -46,6 +46,8 @@ check GET /notes/1 "" 404 'no note 1'
 check DELETE /notes/1 "" 404 'no note 1'
 check POST /notes '{"title":"c","body":"third"}' 201 '"id":3'
 check GET /notes "" 200 '"id":2'
+check GET '/notes?limit=1' "" 200 '"id":2'
+check GET '/notes?offset=1&limit=1' "" 200 '"id":3'
 check GET /nope "" 404 'not found'
 # Racing POSTs must all get distinct ids.
 for i in 1 2 3 4 5 6 7 8; do

@@ -41,3 +41,42 @@ pub fn str_fields(r: web::Request, keys: List<Str>) -> Result<List<Str>, web::Re
     }
     Ok(out)
 }
+
+// A path parameter as an integer, or a 400 saying `what` must be one.
+pub fn int_param(s: Str, what: Str) -> Result<Int, web::Response> {
+    match s.parse_int() {
+        Some(n) => Ok(n),
+        None => Err(error(400, what + " must be an integer")),
+    }
+}
+
+// The first element, if any.
+pub fn first<T>(xs: List<T>) -> Option<T> {
+    if xs.len() == 0 { None } else { Some(xs[0]) }
+}
+
+// The values present in `xs`, in order.
+pub fn flatten<T>(xs: List<Option<T>>) -> List<T> {
+    let mut out: List<T> = [];
+    for x in xs {
+        if let Some(v) = x { out.push(v); }
+    }
+    out
+}
+
+// One page of a listing: `items` are elements offset.. of `total`.
+pub struct Page<T> { items: List<T>, total: Int, offset: Int }
+
+// The page of `xs` that the query parameters `offset` (default 0) and `limit` (default: all) ask for.
+pub fn page<T>(xs: List<T>, r: web::Request) -> Page<T> {
+    let q = web::query(r);
+    let offset = q.get("offset").and_then(|s| s.parse_int()).unwrap_or(0);
+    let limit = q.get("limit").and_then(|s| s.parse_int()).unwrap_or(xs.len());
+    let mut items: List<T> = [];
+    let mut i = if offset < 0 { 0 } else { offset };
+    while i < xs.len() && items.len() < limit {
+        items.push(xs[i]);
+        i += 1;
+    }
+    Page { items: items, total: xs.len(), offset: offset }
+}

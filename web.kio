@@ -65,6 +65,34 @@ pub fn route(r: Request, method: Str, pattern: Str) -> Option<Map<Str, Str>> {
     Some(params)
 }
 
+// A route table entry: a request that matches `method` and `pattern` selects `action`, a value the
+// app defines (usually an enum), not a function. Handlers that use a Dir or Kv cannot be function
+// values (kio's rule 1), so the app matches on the action and calls the named function.
+pub struct Route<A> { method: Str, pattern: Str, action: A }
+
+// The route a request selected, and its path parameters keyed by ":name".
+pub struct Matched<A> { action: A, params: Map<Str, Str> }
+
+pub fn get<A>(pattern: Str, action: A) -> Route<A> { Route { method: "GET", pattern: pattern, action: action } }
+pub fn post<A>(pattern: Str, action: A) -> Route<A> { Route { method: "POST", pattern: pattern, action: action } }
+pub fn put<A>(pattern: Str, action: A) -> Route<A> { Route { method: "PUT", pattern: pattern, action: action } }
+pub fn delete<A>(pattern: Str, action: A) -> Route<A> { Route { method: "DELETE", pattern: pattern, action: action } }
+
+// The first route in `routes` that matches `r`, in list order.
+pub fn dispatch<A>(routes: List<Route<A>>, r: Request) -> Option<Matched<A>> {
+    for rt in routes {
+        if let Some(p) = route(r, rt.method, rt.pattern) {
+            return Some(Matched { action: rt.action, params: p });
+        }
+    }
+    None
+}
+
+// The path parameter `name` (without the colon) of a match, or "".
+pub fn param<A>(m: Matched<A>, name: Str) -> Str {
+    m.params.get(":" + name).unwrap_or("")
+}
+
 // Query parameters, percent-decoded.
 pub fn query(r: Request) -> Map<Str, Str> {
     let mut m: Map<Str, Str> = Map::new();
