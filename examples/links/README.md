@@ -13,7 +13,7 @@ kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --li
 |---|---|
 | `GET /` | HTML page: the top 20 links by hits |
 | `GET /static/<file>` | a file from `assets` |
-| `GET /<slug>` | 302 to the link's URL; counts the hit (`swap`, retried, so concurrent hits are all counted) |
+| `GET /<slug>` | 302 to the link's URL; counts the hit (`add` on `hits/<slug>`, atomic, so concurrent hits are all counted) |
 | `GET /api/links` | links by hits, most first; `?offset=`, `?limit=` (default 50, at most 500); 400 on a bad value |
 | `POST /api/links` | `{"url": .., "slug": optional}`: 201, 400 (bad JSON, URL or slug), 409 (slug taken); token needed |
 | `DELETE /api/links/<slug>` | 204 or 404; token needed |
@@ -35,21 +35,24 @@ The token is set by a separate program, so the server can only read it:
 $ kio check set_token.kio
 main : secret read, auth set
 $ kio check app.kio | grep -v ': none' | grep -v '^web::\|^api::'
-all_links         : links get keys
+all_links         : links scan
 authorized        : auth get
 claim             : links swap
 create            : links get swap
-delete            : links get swap
-follow            : links get swap
+delete            : links delete get
+follow            : links add get
 generated         : links get swap
-handle            : links get keys swap, auth get, assets read
-home              : links get keys
-list              : links get keys
-load              : links get
-main              : req body header_names header_values method target, res send, links get keys swap, auth get, assets read
+handle            : links add delete get scan swap, auth get, assets read
+home              : links scan
+list              : links scan
+main              : req body header_names header_values method target, res send, links add delete get scan swap, auth get, assets read
+scan_all          : links scan
 take_id           : links get swap
+url_of            : links get
 ```
 
-The server reads and swaps links, reads the token hash and reads files under `static/`. It cannot write the token hash, write files, or make requests.
+The server reads, scans, swaps, counts and deletes links, reads the token hash and reads files under `static/`. It cannot write the token hash, write files, or make requests.
+
+Listing is two `scan`s (the `link/` records and the `hits/` counts, 1,000 a page) however many links there are, and a hit is one `get` plus one `add`: with 301 links, `GET /api/links` went from 271 to 13,200 requests/s and redirects from 5,660 to 15,500 (`ab -c 20`, Apple silicon) when `scan` and `add` replaced `keys` plus a `get` per link and a `swap` loop.
 
 `./test.sh` sets a token, serves the app on a free port and checks every route with curl: auth failures, bad JSON and URLs, taken and reserved slugs, redirects and hit counts, 20 concurrent hits counted exactly, paging and sort order, HTML escaping, static files, HEAD, delete, and a restart on the same store with links and counts intact.

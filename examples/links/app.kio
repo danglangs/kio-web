@@ -6,8 +6,9 @@
 //   GET    /api/links         links by hits, most first; ?offset= and ?limit= (default 50, at most 500)
 //   POST   /api/links         {"url": .., "slug": optional} creates a link (bearer token)
 //   DELETE /api/links/<slug>  removes a link (bearer token)
-// A link is stored under `link/<slug>` as {"url", "hits"}; `next` is the counter that names
-// links created without a slug. The key `token` in `auth` is the SHA-256 hex of the API token (set_token.kio stores it).
+// A link is stored under `link/<slug>` as {"url"} and its hit count under `hits/<slug>` (decimal
+// text, counted with `add`); `next` is the counter that names links created without a slug. The
+// key `token` in `auth` is the SHA-256 hex of the API token (set_token.kio stores it).
 mod web;
 mod api;
 
@@ -66,40 +67,61 @@ fn authorized(r: web::Request, auth: Kv) -> Bool {
 struct Link { slug: Str, url: Str, hits: Int }
 
 fn key(slug: Str) -> Str { "link/" + slug }
+fn hits_key(slug: Str) -> Str { "hits/" + slug }
 
 fn storage_error(_e: KvErr) -> web::Response { api::error(500, "storage error") }
 
 fn encode(l: Link) -> Bytes {
     let mut o: Map<Str, Json> = Map::new();
     o.insert("url", Json::Str(l.url));
-    o.insert("hits", Json::Num(l.hits));
     Json::Obj(o).to_json().to_bytes()
 }
 
-fn decode(slug: Str, b: Bytes) -> Option<Link> {
+fn decode(b: Bytes) -> Option<Str> {
     let j = b.to_str().parse_json().ok()?;
-    Some(Link { slug: slug, url: api::str_field(j, "url")?, hits: api::int_field(j, "hits")? })
+    api::str_field(j, "url")
 }
 
-// The link stored under `slug` and its stored bytes (for a later `swap`), if there is one.
-struct Stored { link: Link, raw: Bytes }
-
-fn load(links: Kv, slug: Str) -> Result<Option<Stored>, web::Response> {
+// The URL of the link stored under `slug`, if there is one.
+fn url_of(links: Kv, slug: Str) -> Result<Option<Str>, web::Response> {
     let raw = match links.get(key(slug)).map_err(storage_error)? {
         Some(b) => b,
         None => return Ok(None),
     };
-    match decode(slug, raw) {
-        Some(l) => Ok(Some(Stored { link: l, raw: raw })),
+    match decode(raw) {
+        Some(url) => Ok(Some(url)),
         None => Err(api::error(500, "corrupt record for " + slug)),
     }
 }
 
+// Every entry under `prefix`, a page of 1,000 at a time.
+fn scan_all(links: Kv, prefix: Str) -> Result<List<KvEntry>, web::Response> {
+    let mut out: List<KvEntry> = [];
+    let mut after: Option<Str> = None;
+    let mut more = true;
+    while more {
+        let page = links.scan(prefix, after, 1000).map_err(storage_error)?;
+        more = page.len() == 1000;
+        if more { after = Some(page[page.len() - 1].key); }
+        for e in page { out.push(e); }
+    }
+    Ok(out)
+}
+
+// Every link, from two scans: the records under `link/` and the counts under `hits/`.
 fn all_links(links: Kv) -> Result<List<Link>, web::Response> {
+    let mut hits: Map<Str, Int> = Map::new();
+    for e in scan_all(links, "hits/")? {
+        hits.insert(e.key.strip_prefix("hits/").unwrap_or(e.key), e.value.to_str().parse_int().unwrap_or(0));
+    }
     let mut out: List<Link> = [];
-    for k in links.keys("link/").map_err(storage_error)? {
-        let slug = k.strip_prefix("link/").unwrap_or(k);
-        if let Some(s) = load(links, slug)? { out.push(s.link); }
+    for e in scan_all(links, "link/")? {
+        let slug = e.key.strip_prefix("link/").unwrap_or(e.key);
+        let url = match decode(e.value) {
+            Some(u) => u,
+            None => return Err(api::error(500, "corrupt record for " + slug)),
+        };
+        out.push(Link { slug: slug, url: url, hits: hits.get(slug).unwrap_or(0) });
     }
     Ok(out)
 }
@@ -119,24 +141,16 @@ fn take_id(links: Kv) -> Result<Int, web::Response> {
 
 // ---- handlers
 
-// GET /<slug>: count the hit, then redirect. The swap fails if another hit landed in between;
-// read again and retry, so no hit is lost.
-// GET /<slug> counts the hit; HEAD (link previews, crawlers) redirects without counting.
+// GET /<slug>: one `get` for the URL and one `add` for the hit, which the store counts atomically,
+// so concurrent hits are all counted. HEAD (link previews, crawlers) redirects without counting.
 fn follow(links: Kv, slug: Str, count: Bool) -> Result<web::Response, web::Response> {
     if !valid_slug(slug) { return Ok(web::not_found()); }
-    for _try in 0..1000 {
-        let s = match load(links, slug)? {
-            Some(s) => s,
-            None => return Ok(web::not_found()),
-        };
-        let mut l = s.link;
-        if !count { return Ok(web::redirect(302, l.url)); }
-        l.hits += 1;
-        if links.swap(key(slug), Some(s.raw), Some(encode(l))).map_err(storage_error)? {
-            return Ok(web::redirect(302, l.url));
-        }
-    }
-    Err(api::error(503, "busy, try again"))
+    let url = match url_of(links, slug)? {
+        Some(u) => u,
+        None => return Ok(web::not_found()),
+    };
+    if count { links.add(hits_key(slug), 1).map_err(storage_error)?; }
+    Ok(web::redirect(302, url))
 }
 
 // POST /api/links
@@ -187,19 +201,12 @@ fn list(r: web::Request, links: Kv) -> Result<web::Response, web::Response> {
     Ok(api::json(200, Json::Obj(o)))
 }
 
-// DELETE /api/links/<slug>
+// DELETE /api/links/<slug>: the record and its count.
 fn delete(links: Kv, slug: Str) -> Result<web::Response, web::Response> {
-    if !valid_slug(slug) { return Err(api::error(404, "no link " + slug)); }
-    for _try in 0..1000 {
-        let s = match load(links, slug)? {
-            Some(s) => s,
-            None => return Err(api::error(404, "no link " + slug)),
-        };
-        if links.swap(key(slug), Some(s.raw), None).map_err(storage_error)? {
-            return Ok(web::respond(204, "text/plain", "".to_bytes()));
-        }
-    }
-    Err(api::error(503, "busy, try again"))
+    if !valid_slug(slug) || url_of(links, slug)?.is_none() { return Err(api::error(404, "no link " + slug)); }
+    links.delete(key(slug)).map_err(storage_error)?;
+    links.delete(hits_key(slug)).map_err(storage_error)?;
+    Ok(web::respond(204, "text/plain", "".to_bytes()))
 }
 
 // GET /: the top 20 links as an HTML table.
