@@ -3,7 +3,7 @@
 A JSON notes API over one granted `Dir`, in kio-web.
 
 ```
-cp ../../web.kio ../../json.kio .
+cp ../../web.kio ../../json.kio ../../api.kio .
 kio run app.kio --dir notes=./data --listen 127.0.0.1:8080
 ```
 

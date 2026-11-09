@@ -1,0 +1,38 @@
+// Tests for api.kio: `kio run tests/api_test.kio` prints 0 when every check passes,
+// or the number of the first failing check.
+mod web;
+mod json;
+mod api;
+
+fn req(body: Str) -> web::Request {
+    let hs: List<web::Header> = [];
+    web::Request { method: "POST", path: "/", query: "", headers: hs, body: body.to_bytes() }
+}
+
+fn main() -> Int {
+    let e = api::error(404, "no \"x\"");
+    if e.status != 404 { return 1; }
+    if e.body.to_str() != "{\"error\":\"no \\\"x\\\"\"}" { return 2; }
+    if e.headers[0].value != "application/json" { return 3; }
+    let r = api::json(201, json::Json::Arr([json::Json::Num(1), json::Json::Null]));
+    if r.status != 201 { return 4; }
+    if r.body.to_str() != "[1,null]" { return 5; }
+    match api::body(req("{\"a\":\"x\",\"n\":7}")) {
+        Ok(j) => {
+            if api::str_field(j, "a").unwrap_or("") != "x" { return 6; }
+            if api::int_field(j, "n").unwrap_or(0) != 7 { return 7; }
+            match api::str_field(j, "n") { Some(_) => { return 8; } None => {} }
+            match api::int_field(j, "a") { Some(_) => { return 9; } None => {} }
+            match api::str_field(j, "zz") { Some(_) => { return 10; } None => {} }
+        }
+        Err(_) => { return 11; }
+    }
+    match api::body(req("{\"a\":")) {
+        Ok(_) => { return 12; }
+        Err(x) => {
+            if x.status != 400 { return 13; }
+            if !x.body.to_str().contains("at byte") { return 14; }
+        }
+    }
+    0
+}

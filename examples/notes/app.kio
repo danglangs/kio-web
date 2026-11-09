@@ -4,6 +4,7 @@
 // NotFound; `create` refuses to overwrite, so two racing POSTs cannot take the same id.
 mod web;
 mod json;
+mod api;
 
 fn main(req: Incoming, res: Outgoing, notes: Dir) -> Result<(), WebErr> {
     let r = web::request(req);
@@ -12,57 +13,47 @@ fn main(req: Incoming, res: Outgoing, notes: Dir) -> Result<(), WebErr> {
 
 fn handle(r: web::Request, notes: Dir) -> web::Response {
     match web::route(r, "POST", "/notes") {
-        Some(_) => { return create(r, notes); }
+        Some(_) => return create(r, notes),
         None => {}
     }
     match web::route(r, "GET", "/notes") {
-        Some(_) => { return list(notes); }
+        Some(_) => return list(notes),
         None => {}
     }
     match web::route(r, "GET", "/notes/:id") {
-        Some(p) => { return show(notes, p.get(":id").unwrap_or("")); }
+        Some(p) => return show(notes, p.get(":id").unwrap_or("")),
         None => {}
     }
     match web::route(r, "PUT", "/notes/:id") {
-        Some(_) => { return unsupported("update", "overwrite"); }
+        Some(_) => return unsupported("update", "overwrite"),
         None => {}
     }
     match web::route(r, "DELETE", "/notes/:id") {
-        Some(_) => { return unsupported("delete", "delete"); }
+        Some(_) => return unsupported("delete", "delete"),
         None => {}
     }
     web::not_found()
 }
 
 fn unsupported(what: Str, method: Str) -> web::Response {
-    error(501, "cannot " + what + " a note: Dir has no `" + method + "` method")
-}
-
-fn error(status: Int, msg: Str) -> web::Response {
-    let mut o: Map<Str, json::Json> = Map::new();
-    o.insert("error", json::Json::Str(msg));
-    web::json(status, json::encode(json::Json::Obj(o)))
+    api::error(501, "cannot " + what + " a note: Dir has no `" + method + "` method")
 }
 
 fn file(id: Int) -> Str { id.to_str() + ".json" }
 
-fn str_field(j: json::Json, key: Str) -> Option<Str> {
-    json::as_str(json::get(j, key)?)
-}
-
 // POST /notes: validate the body, then store it under the next free id.
 fn create(r: web::Request, notes: Dir) -> web::Response {
-    let j = match json::parse(r.body.to_str()) {
+    let j = match api::body(r) {
         Ok(j) => j,
-        Err(e) => { return error(400, e); }
+        Err(e) => return e,
     };
-    let title = match str_field(j, "title") {
+    let title = match api::str_field(j, "title") {
         Some(s) => s,
-        None => { return error(400, "missing string field \"title\""); }
+        None => return api::error(400, "missing string field \"title\""),
     };
-    let body = match str_field(j, "body") {
+    let body = match api::str_field(j, "body") {
         Some(s) => s,
-        None => { return error(400, "missing string field \"body\""); }
+        None => return api::error(400, "missing string field \"body\""),
     };
     store(notes, title, body)
 }
@@ -73,11 +64,11 @@ fn store(notes: Dir, title: Str, body: Str) -> web::Response {
     while id < 100000 {
         let doc = json::encode(note(id, title, body)).to_bytes();
         match notes.create(file(id), doc) {
-            Ok(_) => { return web::json(201, json::encode(note(id, title, body))); }
+            Ok(_) => return api::json(201, note(id, title, body)),
             Err(_) => { id = next_id(notes, id + 1); }
         }
     }
-    error(507, "too many notes")
+    api::error(507, "too many notes")
 }
 
 // The first id >= `from` with no file.
@@ -115,11 +106,11 @@ fn load(notes: Dir, id: Int) -> Option<json::Json> {
 fn show(notes: Dir, id: Str) -> web::Response {
     let n = match id.parse_int() {
         Some(n) => n,
-        None => { return error(400, "note id must be an integer"); }
+        None => return api::error(400, "note id must be an integer"),
     };
     match load(notes, n) {
-        Some(j) => web::json(200, json::encode(j)),
-        None => error(404, "no note " + id),
+        Some(j) => api::json(200, j),
+        None => api::error(404, "no note " + id),
     }
 }
 
@@ -130,8 +121,8 @@ fn list(notes: Dir) -> web::Response {
     while true {
         match load(notes, id) {
             Some(j) => { all.push(j); id += 1; }
-            None => { break; }
+            None => break,
         }
     }
-    web::json(200, json::encode(json::Json::Arr(all)))
+    api::json(200, json::Json::Arr(all))
 }

@@ -64,6 +64,29 @@ Numbers are integers; `1.5` and `2e3` are errors. Nesting deeper than 64 is an e
 
 Parsing time is linear in the input (kiolang P2a or later): 10 KB parses in 0.08 s and needs `--fuel 600000000`, 100 KB in 0.6 s and needs `--fuel 6000000000`.
 
+## API helpers
+
+Copy [api.kio](api.kio) too and declare `mod web; mod json; mod api;`. It builds on both, which stay independent of each other: an app that uses only web.kio needs neither json.kio nor api.kio.
+
+| Function | Does |
+|---|---|
+| `json(status, j)` | respond with `Json` `j` encoded as `application/json` |
+| `error(status, msg)` | respond with `{"error": msg}` |
+| `body(r)` | the request body as `Ok(Json)`, or `Err(response)`, a 400 carrying the parse message |
+| `str_field(j, key)`, `int_field(j, key)` | an object field, if present with that type |
+
+```rust
+fn create(r: web::Request) -> web::Response {
+    let j = match api::body(r) { Ok(j) => j, Err(e) => return e };
+    match api::str_field(j, "title") {
+        Some(t) => api::json(201, json::Json::Str(t)),
+        None => api::error(400, "missing string field \"title\""),
+    }
+}
+```
+
+[examples/notes](examples/notes) is a full app built this way.
+
 ## Test
 
 ```
