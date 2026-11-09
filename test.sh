@@ -14,4 +14,5 @@ done
 KIO="$KIO" examples/notes/test.sh
 KIO="$KIO" examples/kvnotes/test.sh
 KIO="$KIO" examples/ws/test.sh
+KIO="$KIO" examples/links/test.sh
 echo ok

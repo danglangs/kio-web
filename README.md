@@ -34,7 +34,8 @@ kio has no package manager: copy [web.kio](web.kio) beside your app and write `m
 | `get`, `post`, `put`, `delete`, `dispatch(routes, r)`, `param(m, name)` | a route table; see Routing |
 | `query(r)`, `decode(s)` | query parameters, percent-decoded |
 | `header(r, name)` | a header value; names are lowercase |
-| `text`, `json`, `respond`, `not_found` | build responses |
+| `text`, `json`, `html`, `respond`, `not_found`, `redirect(status, location)` | build responses |
+| `html_escape(s)` | `s` safe in HTML text and quoted attributes (`& < > " '`) |
 | `json_str(s)` | a JSON string literal |
 | `file(dir, name)` | serve a file from a granted `Dir` |
 | `upgrade(msg)`, `bearer(msg)` | a WebSocket's upgrade request as a `Request`; its `authorization: Bearer` token; see WebSockets |
@@ -103,7 +104,7 @@ fn create(r: web::Request) -> web::Response {
 }
 ```
 
-Two full apps are built this way: [examples/notes](examples/notes) stores notes as files in a `Dir` (list, create, write, remove), and [examples/kvnotes](examples/kvnotes) is the same API over a `Kv` with a `swap`-based id counter.
+Three full apps are built this way: [examples/notes](examples/notes) stores notes as files in a `Dir` (list, create, write, remove), [examples/kvnotes](examples/kvnotes) is the same API over a `Kv` with a `swap`-based id counter, and [examples/links](examples/links) is a link shortener: bearer-token auth, redirects that count hits, an HTML page, static files, and a `Kv` file that survives restarts.
 
 ## WebSockets
 

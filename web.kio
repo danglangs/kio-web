@@ -54,6 +54,14 @@ pub fn respond(status: Int, ctype: Str, body: Bytes) -> Response {
 pub fn text(status: Int, s: Str) -> Response { respond(status, "text/plain; charset=utf-8", s.to_bytes()) }
 pub fn json(status: Int, s: Str) -> Response { respond(status, "application/json", s.to_bytes()) }
 pub fn not_found() -> Response { text(404, "not found") }
+pub fn html(status: Int, s: Str) -> Response { respond(status, "text/html; charset=utf-8", s.to_bytes()) }
+
+// A redirect (301, 302, 303, 307 or 308) to `location`, with an empty body.
+pub fn redirect(status: Int, location: Str) -> Response {
+    let mut r = respond(status, "text/plain; charset=utf-8", "".to_bytes());
+    r.headers.push(Header { name: "location", value: location });
+    r
+}
 
 // The value of header `name` (lowercase), if present.
 pub fn header(r: Request, name: Str) -> Option<Str> {
@@ -169,6 +177,30 @@ pub fn json_str(s: Str) -> Str {
         out.push(c);
     }
     out.push(34);
+    out.to_str()
+}
+
+// `s` with `& < > " '` written as entities, safe inside HTML text and quoted attribute values.
+pub fn html_escape(s: Str) -> Str {
+    let b = s.to_bytes();
+    let mut out = "".to_bytes();
+    for i in 0..b.len() {
+        let c = b[i];
+        let e = match c {
+            38 => "&amp;",
+            60 => "&lt;",
+            62 => "&gt;",
+            34 => "&quot;",
+            39 => "&#39;",
+            _ => "",
+        };
+        if e == "" {
+            out.push(c);
+        } else {
+            let eb = e.to_bytes();
+            for j in 0..eb.len() { out.push(eb[j]); }
+        }
+    }
     out.to_str()
 }
 

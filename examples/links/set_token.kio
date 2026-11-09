@@ -1,0 +1,14 @@
+// Store the API token, read from the file `token` in `secret`:
+// `kio run set_token.kio --dir secret=path/to/dir --kv auth=auth.kv`
+// The server reads the same store; it can only `get` from it.
+fn main(secret: Dir, auth: Kv) -> Str {
+    let token = match secret.read("token") {
+        Ok(b) => b.to_str().trim(),
+        Err(_) => return "no file `token` in secret",
+    };
+    if token.len() < 16 { return "the token must be at least 16 bytes"; }
+    match auth.set("token", token.to_bytes()) {
+        Ok(_) => "token set",
+        Err(_) => "cannot store the token",
+    }
+}

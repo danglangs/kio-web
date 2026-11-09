@@ -67,5 +67,12 @@ fn main() -> Int {
         None => { return 25; }
     }
     if web::param(web::Matched { action: 0, params: Map::new() }, "id") != "" { return 26; }
+    // HTML escaping, html and redirect responses.
+    if web::html_escape("<a href=\"x\">Tom & Jerry's</a>") != "&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&#39;s&lt;/a&gt;" { return 27; }
+    if web::html_escape("plain é") != "plain é" { return 28; }
+    if web::html(200, "<p>").headers[0].value != "text/html; charset=utf-8" { return 29; }
+    let rd = web::redirect(302, "https://example.com/");
+    if rd.status != 302 { return 30; }
+    if rd.headers.len() != 2 || rd.headers[1].name != "location" || rd.headers[1].value != "https://example.com/" { return 31; }
     0
 }
