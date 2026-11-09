@@ -13,4 +13,5 @@ done
 "$KIO" check examples/hello/app.kio
 KIO="$KIO" examples/notes/test.sh
 KIO="$KIO" examples/kvnotes/test.sh
+KIO="$KIO" examples/ws/test.sh
 echo ok

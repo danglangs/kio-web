@@ -19,6 +19,21 @@ pub fn request(req: Incoming) -> Request {
     Request { method: req.method(), path: target[0], query: query, headers: hs, body: req.body() }
 }
 
+// The WebSocket upgrade behind `msg` as a Request: GET, its path and query, no headers or body
+// (look a header up with `msg.header(name)`). Every event of a connection gives the same one, so
+// `route`, `dispatch` and `query` route its messages.
+pub fn upgrade(msg: WsMessage) -> Request {
+    let target = msg.target().split("?");
+    let hs: List<Header> = [];
+    let query = if target.len() > 1 { target[1] } else { "" };
+    Request { method: "GET", path: target[0], query: query, headers: hs, body: "".to_bytes() }
+}
+
+// The token of the upgrade's `authorization: Bearer <token>` header, if it has one.
+pub fn bearer(msg: WsMessage) -> Option<Str> {
+    msg.header("authorization")?.strip_prefix("Bearer ")
+}
+
 // Send a Response through the host.
 pub fn send(res: Outgoing, r: Response) -> Result<(), WebErr> {
     let mut names: List<Str> = [];

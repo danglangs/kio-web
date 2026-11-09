@@ -37,6 +37,7 @@ kio has no package manager: copy [web.kio](web.kio) beside your app and write `m
 | `text`, `json`, `respond`, `not_found` | build responses |
 | `json_str(s)` | a JSON string literal |
 | `file(dir, name)` | serve a file from a granted `Dir` |
+| `upgrade(msg)`, `bearer(msg)` | a WebSocket's upgrade request as a `Request`; its `authorization: Bearer` token; see WebSockets |
 
 ## Routing
 
@@ -113,6 +114,23 @@ fn create(r: web::Request) -> web::Response {
 ```
 
 Two full apps are built this way: [examples/notes](examples/notes) stores notes as files in a `Dir` (list, create, write, remove), and [examples/kvnotes](examples/kvnotes) is the same API over a `Kv` with a `swap`-based id counter.
+
+## WebSockets
+
+A WebSocket server's `main` takes `msg: WsMessage, conn: WsSend` (kio runs it once per event: open, each message, close). Every event of a connection sees the same upgrade request, so `web::upgrade(msg)` routes it with `route` or `dispatch`, and `web::bearer(msg)` reads its token:
+
+```rust
+fn main(msg: WsMessage, conn: WsSend, auth: Kv, counts: Kv) -> Result<(), WsErr> {
+    if msg.kind() == "close" { return forget(msg, counts); }
+    if !authorized(msg, auth) { return conn.close(4401); }
+    match web::dispatch(routes(), web::upgrade(msg)) {
+        Some(m) => match m.action { Act::Echo => echo(msg, conn), Act::Count => count(msg, conn, counts) },
+        None => conn.close(4404),
+    }
+}
+```
+
+The upgrade is answered before `main` runs, so a refused client is closed (here 4401) on its `open` event; its later messages are refused the same way. [examples/ws](examples/ws) is the full app: `/echo` and a per-connection `/count`, for clients whose token matches one stored in a `Kv` by a separate program.
 
 ## Test
 

@@ -1,0 +1,67 @@
+// A WebSocket app routed by the upgrade request's path, for clients holding a token.
+// `kio run app.kio --kv auth=auth.kv --kv counts=:memory: --listen 127.0.0.1:8080`
+//   /echo   echoes each message
+//   /count  answers each text message with how many this connection has sent
+// A connection whose upgrade lacks `authorization: Bearer <token>`, the token being the key
+// `token` in `auth` (set_token.kio stores it), is closed with 4401; an unknown path with 4404.
+mod web;
+
+enum Act { Echo, Count }
+
+fn routes() -> List<web::Route<Act>> {
+    [web::get("/echo", Act::Echo), web::get("/count", Act::Count)]
+}
+
+fn main(msg: WsMessage, conn: WsSend, auth: Kv, counts: Kv) -> Result<(), WsErr> {
+    // Every event sees the same upgrade, so a refused connection's later messages are refused too.
+    if msg.kind() == "close" { return forget(msg, counts); }
+    if !authorized(msg, auth) { return conn.close(4401); }
+    match web::dispatch(routes(), web::upgrade(msg)) {
+        Some(m) => match m.action {
+            Act::Echo => echo(msg, conn),
+            Act::Count => count(msg, conn, counts),
+        },
+        None => conn.close(4404),
+    }
+}
+
+// Whether the upgrade carried the stored token. With no token stored, no one is let in.
+fn authorized(msg: WsMessage, auth: Kv) -> Bool {
+    let want = match auth.get("token") {
+        Ok(Some(t)) => t.to_str(),
+        _ => return false,
+    };
+    match web::bearer(msg) {
+        Some(got) => want != "" && got == want,
+        None => false,
+    }
+}
+
+fn echo(msg: WsMessage, conn: WsSend) -> Result<(), WsErr> {
+    match msg.kind() {
+        "text" => conn.text(msg.data().to_str()),
+        "binary" => conn.binary(msg.data()),
+        _ => Ok(()),
+    }
+}
+
+fn key(msg: WsMessage) -> Str { "count/" + msg.conn().to_str() }
+
+// A connection's events run one at a time, in order, so a plain get and set cannot race.
+fn count(msg: WsMessage, conn: WsSend, counts: Kv) -> Result<(), WsErr> {
+    if msg.kind() != "text" { return Ok(()); }
+    let n = match counts.get(key(msg)) {
+        Ok(Some(b)) => b.to_str().parse_int().unwrap_or(0),
+        _ => 0,
+    } + 1;
+    match counts.set(key(msg), n.to_str().to_bytes()) {
+        Ok(_) => conn.text(n.to_str()),
+        Err(_) => conn.close(1011),
+    }
+}
+
+// The connection is over: drop its count.
+fn forget(msg: WsMessage, counts: Kv) -> Result<(), WsErr> {
+    let _gone = counts.delete(key(msg));
+    Ok(())
+}
