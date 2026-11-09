@@ -35,8 +35,8 @@ pub fn str_fields(r: web::Request, keys: List<Str>) -> Result<List<Str>, web::Re
     let mut out: List<Str> = [];
     for k in keys {
         match str_field(j, k) {
-            Some(s) => { out.push(s); }
-            None => { return Err(error(400, "missing string field \"" + k + "\"")); }
+            Some(s) => out.push(s),
+            None => return Err(error(400, "missing string field \"" + k + "\"")),
         }
     }
     Ok(out)

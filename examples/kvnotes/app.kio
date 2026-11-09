@@ -10,26 +10,11 @@ fn main(req: Incoming, res: Outgoing, notes: Kv) -> Result<(), WebErr> {
 }
 
 fn handle(r: web::Request, notes: Kv) -> web::Response {
-    match web::route(r, "POST", "/notes") {
-        Some(_) => { return create(r, notes); }
-        None => {}
-    }
-    match web::route(r, "GET", "/notes") {
-        Some(_) => { return list(notes); }
-        None => {}
-    }
-    match web::route(r, "GET", "/notes/:id") {
-        Some(p) => { return show(notes, p.get(":id").unwrap_or("")); }
-        None => {}
-    }
-    match web::route(r, "PUT", "/notes/:id") {
-        Some(p) => { return replace(r, notes, p.get(":id").unwrap_or("")); }
-        None => {}
-    }
-    match web::route(r, "DELETE", "/notes/:id") {
-        Some(p) => { return delete(notes, p.get(":id").unwrap_or("")); }
-        None => {}
-    }
+    if let Some(_) = web::route(r, "POST", "/notes") { return create(r, notes); }
+    if let Some(_) = web::route(r, "GET", "/notes") { return list(notes); }
+    if let Some(p) = web::route(r, "GET", "/notes/:id") { return show(notes, p.get(":id").unwrap_or("")); }
+    if let Some(p) = web::route(r, "PUT", "/notes/:id") { return replace(r, notes, p.get(":id").unwrap_or("")); }
+    if let Some(p) = web::route(r, "DELETE", "/notes/:id") { return delete(notes, p.get(":id").unwrap_or("")); }
     web::not_found()
 }
 
@@ -46,26 +31,7 @@ fn io_error() -> web::Response { api::error(500, "storage error") }
 fn key(id: Int) -> Str { "note/" + id.to_str() }
 
 // The id a key stands for: "note/7" is 7.
-fn id_of(k: Str) -> Option<Int> { k.split("/")[1].parse_int() }
-
-// `v` in ascending order. Keys sort as text ("note/10" before "note/2").
-fn sorted(v: List<Int>) -> List<Int> {
-    let mut out: List<Int> = [];
-    for x in v {
-        let mut next: List<Int> = [];
-        let mut placed = false;
-        for y in out {
-            if !placed && x < y {
-                next.push(x);
-                placed = true;
-            }
-            next.push(y);
-        }
-        if !placed { next.push(x); }
-        out = next;
-    }
-    out
-}
+fn id_of(k: Str) -> Option<Int> { k.strip_prefix("note/")?.parse_int() }
 
 fn parse_id(id: Str) -> Result<Int, web::Response> {
     match id.parse_int() {
@@ -105,13 +71,11 @@ fn take_id(notes: Kv) -> Result<Int, KvErr> {
 
 fn load(notes: Kv, id: Int) -> Option<json::Json> {
     match notes.get(key(id)) {
-        Ok(found) => match found {
-            Some(b) => match json::parse(b.to_str()) {
-                Ok(j) => Some(j),
-                Err(_) => None,
-            },
-            None => None,
+        Ok(Some(b)) => match json::parse(b.to_str()) {
+            Ok(j) => Some(j),
+            Err(_) => None,
         },
+        Ok(None) => None,
         Err(_) => None,
     }
 }
@@ -135,17 +99,12 @@ fn list(notes: Kv) -> web::Response {
     };
     let mut found: List<Int> = [];
     for k in keys {
-        match id_of(k) {
-            Some(id) => { found.push(id); }
-            None => {}
-        }
+        if let Some(id) = id_of(k) { found.push(id); }
     }
+    found.sort();
     let mut all: List<json::Json> = [];
-    for id in sorted(found) {
-        match load(notes, id) {
-            Some(j) => { all.push(j); }
-            None => {}
-        }
+    for id in found {
+        if let Some(j) = load(notes, id) { all.push(j); }
     }
     api::json(200, json::Json::Arr(all))
 }

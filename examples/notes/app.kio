@@ -10,26 +10,11 @@ fn main(req: Incoming, res: Outgoing, notes: Dir) -> Result<(), WebErr> {
 }
 
 fn handle(r: web::Request, notes: Dir) -> web::Response {
-    match web::route(r, "POST", "/notes") {
-        Some(_) => { return create(r, notes); }
-        None => {}
-    }
-    match web::route(r, "GET", "/notes") {
-        Some(_) => { return list(notes); }
-        None => {}
-    }
-    match web::route(r, "GET", "/notes/:id") {
-        Some(p) => { return show(notes, p.get(":id").unwrap_or("")); }
-        None => {}
-    }
-    match web::route(r, "PUT", "/notes/:id") {
-        Some(p) => { return replace(r, notes, p.get(":id").unwrap_or("")); }
-        None => {}
-    }
-    match web::route(r, "DELETE", "/notes/:id") {
-        Some(p) => { return delete(notes, p.get(":id").unwrap_or("")); }
-        None => {}
-    }
+    if let Some(_) = web::route(r, "POST", "/notes") { return create(r, notes); }
+    if let Some(_) = web::route(r, "GET", "/notes") { return list(notes); }
+    if let Some(p) = web::route(r, "GET", "/notes/:id") { return show(notes, p.get(":id").unwrap_or("")); }
+    if let Some(p) = web::route(r, "PUT", "/notes/:id") { return replace(r, notes, p.get(":id").unwrap_or("")); }
+    if let Some(p) = web::route(r, "DELETE", "/notes/:id") { return delete(notes, p.get(":id").unwrap_or("")); }
     web::not_found()
 }
 
@@ -47,40 +32,17 @@ fn io_error() -> web::Response { api::error(500, "storage error") }
 
 // The id a file name stands for: "7.json" is 7; anything else is None.
 fn id_of(name: Str) -> Option<Int> {
-    let parts = name.split(".");
-    if parts.len() != 2 || parts[1] != "json" { return None; }
-    parts[0].parse_int()
+    name.strip_suffix(".json")?.parse_int()
 }
 
 // Every note id, from one directory listing.
 fn ids(notes: Dir) -> Result<List<Int>, IoErr> {
     let mut out: List<Int> = [];
     for name in notes.list("")? {
-        match id_of(name) {
-            Some(id) => { out.push(id); }
-            None => {}
-        }
+        if let Some(id) = id_of(name) { out.push(id); }
     }
+    out.sort();
     Ok(out)
-}
-
-// `v` in ascending order. The listing is sorted as text ("10.json" before "2.json").
-fn sorted(v: List<Int>) -> List<Int> {
-    let mut out: List<Int> = [];
-    for x in v {
-        let mut next: List<Int> = [];
-        let mut placed = false;
-        for y in out {
-            if !placed && x < y {
-                next.push(x);
-                placed = true;
-            }
-            next.push(y);
-        }
-        if !placed { next.push(x); }
-        out = next;
-    }
-    out
 }
 
 // One more than the largest id, or 1 when there are no notes.
@@ -118,10 +80,8 @@ fn store(notes: Dir, title: Str, body: Str) -> web::Response {
         let doc = json::encode(note(id, title, body)).to_bytes();
         match notes.create(file(id), doc) {
             Ok(_) => return api::json(201, note(id, title, body)),
-            Err(e) => match e {
-                IoErr::Exists => {}
-                _ => { return io_error(); }
-            },
+            Err(IoErr::Exists) => {}
+            Err(_) => return io_error(),
         }
     }
     api::error(503, "too many concurrent writers")
@@ -152,14 +112,11 @@ fn show(notes: Dir, id: Str) -> web::Response {
 fn list(notes: Dir) -> web::Response {
     let mut all: List<json::Json> = [];
     let found = match ids(notes) {
-        Ok(v) => sorted(v),
+        Ok(v) => v,
         Err(_) => return io_error(),
     };
     for id in found {
-        match load(notes, id) {
-            Some(j) => { all.push(j); }
-            None => {}
-        }
+        if let Some(j) = load(notes, id) { all.push(j); }
     }
     api::json(200, json::Json::Arr(all))
 }
@@ -171,8 +128,9 @@ fn replace(r: web::Request, notes: Dir, id: Str) -> web::Response {
         Err(e) => return e,
     };
     match notes.exists(file(n)) {
-        Ok(found) => { if !found { return api::error(404, "no note " + id); } }
-        Err(_) => { return io_error(); }
+        Ok(true) => {}
+        Ok(false) => return api::error(404, "no note " + id),
+        Err(_) => return io_error(),
     }
     let f = match api::str_fields(r, ["title", "body"]) {
         Ok(f) => f,
@@ -192,9 +150,7 @@ fn delete(notes: Dir, id: Str) -> web::Response {
     };
     match notes.remove(file(n)) {
         Ok(_) => web::respond(204, "text/plain", "".to_bytes()),
-        Err(e) => match e {
-            IoErr::NotFound => api::error(404, "no note " + id),
-            _ => io_error(),
-        },
+        Err(IoErr::NotFound) => api::error(404, "no note " + id),
+        Err(_) => io_error(),
     }
 }

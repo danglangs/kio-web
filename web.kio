@@ -86,9 +86,12 @@ pub fn decode(s: Str) -> Str {
             out.push(32);
             i += 1;
         } else if c == 37 {
-            match hex(b, i + 1) {
-                Some(v) => { out.push(v); i += 3; }
-                None => { out.push(c); i += 1; }
+            if let Some(v) = hex(b, i + 1) {
+                out.push(v);
+                i += 3;
+            } else {
+                out.push(c);
+                i += 1;
             }
         } else {
             out.push(c);
@@ -133,19 +136,13 @@ pub fn file(files: Dir, path: Str) -> Response {
     match files.read(name) {
         Ok(b) => respond(200, ctype(name), b),
         // A missing, refused or escaping path is a 404, so a client cannot learn which paths exist.
-        Err(e) => match e {
-            IoErr::TooLarge => text(500, "file too large"),
-            _ => not_found(),
-        },
+        Err(IoErr::TooLarge) => text(500, "file too large"),
+        Err(_) => not_found(),
     }
 }
 
 pub fn strip_slash(path: Str) -> Str {
-    let b = path.to_bytes();
-    if b.len() == 0 || b[0] != 47 { return path; }
-    let mut out = "".to_bytes();
-    for i in 1..b.len() { out.push(b[i]); }
-    out.to_str()
+    path.strip_prefix("/").unwrap_or(path)
 }
 
 fn ctype(name: Str) -> Str {

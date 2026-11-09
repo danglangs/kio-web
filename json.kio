@@ -111,7 +111,7 @@ fn string(b: Bytes, i: Int) -> Result<Scanned, Str> {
         } else {
             match unescape(byte(b, j + 1)) {
                 Some(e) => { out.push(e); j += 2; }
-                None => { return Err(err_at("invalid escape", j)); }
+                None => return Err(err_at("invalid escape", j)),
             }
         }
     }
@@ -139,7 +139,7 @@ fn hex4(b: Bytes, i: Int) -> Result<Int, Str> {
     for k in 0..4 {
         match hex_digit(byte(b, i + k)) {
             Some(d) => { n = n * 16 + d; }
-            None => { return Err(err_at("expected 4 hex digits", i)); }
+            None => return Err(err_at("expected 4 hex digits", i)),
         }
     }
     Ok(n)
