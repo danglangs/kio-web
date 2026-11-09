@@ -25,6 +25,19 @@ fn doc(s: Str) -> json::Json {
     }
 }
 
+// 1 for a Float, 2 for a Num, 0 otherwise.
+fn is_float(s: Str) -> Int {
+    match doc(s) {
+        json::Json::Float(_) => 1,
+        json::Json::Num(_) => 2,
+        _ => 0,
+    }
+}
+
+fn flt(s: Str) -> Float {
+    json::as_float(doc(s)).unwrap_or(-1.0)
+}
+
 fn nest(n: Int) -> Str {
     let mut s = "";
     for i in 0..n { s = s + "["; }
@@ -45,10 +58,11 @@ fn main() -> Int {
     if norm("-12") != "-12" { return 8; }
     if norm("9223372036854775807") != "9223372036854775807" { return 9; }
     if norm("-9223372036854775808") != "-9223372036854775808" { return 10; }
-    if norm("9223372036854775808") != "integer too large at byte 0" { return 11; }
-    if norm("-9223372036854775809") != "integer too large at byte 0" { return 12; }
-    if norm("1.5") != "floats are not supported at byte 1" { return 13; }
-    if norm("2e3") != "floats are not supported at byte 1" { return 14; }
+    // too big for Int: a Float.
+    if norm("9223372036854775808") != "9223372036854776000.0" { return 11; }
+    if is_float("-9223372036854775809") != 1 { return 12; }
+    if norm("1.5") != "1.5" { return 13; }
+    if norm("2e3") != "2000.0" { return 14; }
     if norm("-") != "expected a digit at byte 1" { return 15; }
     if norm("01") != "expected end of input at byte 1" { return 16; }
     // strings and escapes.
@@ -103,5 +117,39 @@ fn main() -> Int {
     match json::as_str(j) { Some(_) => { return 56; } None => {} }
     match json::as_bool(j) { Some(_) => { return 57; } None => {} }
     match json::as_list(j) { Some(_) => { return 58; } None => {} }
+    // float grammar.
+    if flt("0.5") != 0.5 || is_float("0.5") != 1 { return 59; }
+    if flt("-1.5e3") != -1500.0 { return 60; }
+    if flt("1E+2") != 100.0 || is_float("1E+2") != 1 { return 61; }
+    if flt("1e-7") != 0.0000001 { return 62; }
+    if is_float("1") != 2 || is_float("-0") != 2 || is_float("1.0") != 1 { return 63; }
+    if norm("01") != "expected end of input at byte 1" { return 64; }
+    if norm("1.") != "expected a digit at byte 2" { return 65; }
+    if norm(".5") != "expected a value at byte 0" { return 66; }
+    if norm("-") != "expected a digit at byte 1" { return 67; }
+    if norm("-.5") != "expected a digit at byte 1" { return 68; }
+    if norm("1e") != "expected a digit at byte 2" { return 69; }
+    if norm("1e+") != "expected a digit at byte 3" { return 70; }
+    if norm("0.5.5") != "expected end of input at byte 3" { return 71; }
+    if norm("1e999") != "number out of range at byte 0" { return 72; }
+    // encoding keeps Float distinct from Num.
+    if norm("1.0") != "1.0" { return 73; }
+    if norm("0.1") != "0.1" { return 74; }
+    if norm("1e-7") != "0.0000001" { return 75; }
+    if norm("[2.50,-0.0,1e2]") != "[2.5,-0.0,100.0]" { return 76; }
+    let samples = ["0.1", "1.0", "-1.5e3", "1e300", "5e-324", "1.7976931348623157e308", "123456789.123456789", "9223372036854775808", "[0.5,{\"x\":-2.25e-5}]"];
+    for k in 0..samples.len() {
+        let a = doc(samples[k]);
+        if doc(json::encode(a)) != a { return 77; }
+    }
+    // NaN and infinity encode as null.
+    if json::encode(json::Json::Float(0.0 / 0.0)) != "null" { return 78; }
+    if json::encode(json::Json::Float(1.0 / 0.0)) != "null" { return 79; }
+    if json::encode(json::Json::Float(-1.0 / 0.0)) != "null" { return 80; }
+    if json::encode(json::Json::Arr([json::Json::Float(1.5), json::Json::Float(1.0 / 0.0)])) != "[1.5,null]" { return 81; }
+    // as_float accepts Float and Num only.
+    if flt("7") != 7.0 { return 82; }
+    match json::as_float(doc("\"1.5\"")) { Some(_) => { return 83; } None => {} }
+    match json::as_int(doc("1.5")) { Some(_) => { return 84; } None => {} }
     0
 }

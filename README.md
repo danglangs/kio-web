@@ -39,7 +39,7 @@ kio has no package manager: copy [web.kio](web.kio) beside your app and write `m
 
 ## JSON
 
-Copy [json.kio](json.kio) beside your app and write `mod json;`. It decodes into a `Json` tree: `Null`, `Bool`, `Num(Int)`, `Str`, `Arr(List<Json>)`, `Obj(Map<Str, Json>)`.
+Copy [json.kio](json.kio) beside your app and write `mod json;`. It decodes into a `Json` tree: `Null`, `Bool`, `Num(Int)`, `Float(Float)`, `Str`, `Arr(List<Json>)`, `Obj(Map<Str, Json>)`.
 
 ```rust
 mod json;
@@ -59,8 +59,9 @@ fn name(body: Str) -> Str {
 | `encode(j)` | compact text, keys in `Map` order; `parse(encode(j))` gives `j` back |
 | `get(j, key)`, `at(j, i)` | an object field, an array element |
 | `as_str`, `as_int`, `as_bool`, `as_list` | the payload, if `j` has that type |
+| `as_float(j)` | a `Float` from `Float`, or a `Num` converted |
 
-Numbers are integers; `1.5` and `2e3` are errors. Nesting deeper than 64 is an error. A repeated key keeps the last value.
+The full JSON number grammar parses. A number with no fraction or exponent that fits `Int` is `Num`; any other (`1.5`, `2e3`, `1.0`, or an integer beyond `Int`) is `Float`. A literal beyond the range of `Float` (`1e999`) is an error. `encode` writes a `Float` in Rust's `{}` form, adding `.0` when it has no `.` or exponent, so `parse(encode(j))` keeps `Float` and `Num` apart; NaN and infinities cannot be JSON and encode as `null`. Nesting deeper than 64 is an error. A repeated key keeps the last value.
 
 Parsing time is linear in the input (kiolang P2a or later): 10 KB parses in 0.08 s and needs `--fuel 600000000`, 100 KB in 0.6 s and needs `--fuel 6000000000`.
 

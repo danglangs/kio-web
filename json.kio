@@ -1,7 +1,7 @@
 // JSON for kio-web: `parse` and `encode` over a `Json` tree, plus accessors that return Option.
-// Numbers are Int only. Input is read as bytes, with `byte` giving -1 past the end.
+// Numbers are Int, or Float when they have a fraction or exponent or do not fit Int. Input is read as bytes, with `byte` giving -1 past the end.
 
-pub enum Json { Null, Bool(Bool), Num(Int), Str(Str), Arr(List<Json>), Obj(Map<Str, Json>) }
+pub enum Json { Null, Bool(Bool), Num(Int), Float(Float), Str(Str), Arr(List<Json>), Obj(Map<Str, Json>) }
 
 // A parsed value and the offset just after it.
 struct Parsed { value: Json, pos: Int }
@@ -57,30 +57,52 @@ fn literal(b: Bytes, i: Int, word: Str, v: Json) -> Result<Parsed, Str> {
     Ok(Parsed { value: v, pos: i + w.len() })
 }
 
-// An integer, accumulated downward so that the smallest Int parses and nothing overflows.
+// A number. Without fraction or exponent it is an Int, accumulated downward so that the
+// smallest Int parses and nothing overflows; if it does not fit, or has a fraction or
+// exponent, the text is parsed as a Float.
 fn number(b: Bytes, i: Int) -> Result<Parsed, Str> {
     let neg = byte(b, i) == 45;
     let mut j = if neg { i + 1 } else { i };
     if !is_digit(byte(b, j)) { return Err(err_at("expected a digit", j)); }
     let mut n = 0;
-    // A leading 0 ends the number, as JSON allows no leading zeros.
+    let mut fits = true;
+    // A leading 0 ends the integer part, as JSON allows no leading zeros.
     if byte(b, j) == 48 {
         j += 1;
     } else {
         while is_digit(byte(b, j)) {
             let d = byte(b, j) - 48;
-            if n < (-9223372036854775807 - 1 + d) / 10 { return Err(err_at("integer too large", i)); }
-            n = n * 10 - d;
+            if n < (-9223372036854775807 - 1 + d) / 10 { fits = false; } else { n = n * 10 - d; }
             j += 1;
         }
     }
-    let c = byte(b, j);
-    if c == 46 || c == 101 || c == 69 { return Err(err_at("floats are not supported", j)); }
-    if !neg {
-        if n == -9223372036854775807 - 1 { return Err(err_at("integer too large", i)); }
-        n = -n;
+    if !neg && fits && n == -9223372036854775807 - 1 { fits = false; }
+    let mut real = false;
+    if byte(b, j) == 46 {
+        real = true;
+        j = digits(b, j + 1)?;
     }
-    Ok(Parsed { value: Json::Num(n), pos: j })
+    if byte(b, j) == 101 || byte(b, j) == 69 {
+        real = true;
+        j += 1;
+        if byte(b, j) == 43 || byte(b, j) == 45 { j += 1; }
+        j = digits(b, j)?;
+    }
+    if !real && fits { return Ok(Parsed { value: Json::Num(if neg { n } else { -n }), pos: j }); }
+    let mut text = "".to_bytes();
+    for k in i..j { text.push(b[k]); }
+    let f = text.to_str().parse_float().unwrap_or(0.0);
+    // Infinity (a literal beyond f64's range) has no JSON form.
+    if (f - f).is_nan() { return Err(err_at("number out of range", i)); }
+    Ok(Parsed { value: Json::Float(f), pos: j })
+}
+
+// The offset after one or more digits starting at b[i].
+fn digits(b: Bytes, i: Int) -> Result<Int, Str> {
+    if !is_digit(byte(b, i)) { return Err(err_at("expected a digit", i)); }
+    let mut j = i;
+    while is_digit(byte(b, j)) { j += 1; }
+    Ok(j)
 }
 
 // The string whose opening quote is b[i].
@@ -219,6 +241,7 @@ pub fn encode(j: Json) -> Str {
         Json::Null => "null",
         Json::Bool(v) => if v { "true" } else { "false" },
         Json::Num(n) => n.to_str(),
+        Json::Float(f) => float_text(f),
         Json::Str(s) => quote(s),
         Json::Arr(xs) => {
             let mut out = "[";
@@ -239,6 +262,18 @@ pub fn encode(j: Json) -> Str {
             out + "}"
         }
     }
+}
+
+// A Float as JSON text: Rust's `{}` form, with `.0` added when it has no `.`, `e` or `E`
+// so it parses back as a Float. NaN and infinities have no JSON form and become null.
+fn float_text(f: Float) -> Str {
+    if (f - f).is_nan() { return "null"; }
+    let t = f.to_str();
+    let b = t.to_bytes();
+    for k in 0..b.len() {
+        if b[k] == 46 || b[k] == 101 || b[k] == 69 { return t; }
+    }
+    t + ".0"
 }
 
 // A JSON string literal: quotes, backslashes and control bytes escaped.
@@ -302,6 +337,15 @@ pub fn as_str(j: Json) -> Option<Str> {
 pub fn as_int(j: Json) -> Option<Int> {
     match j {
         Json::Num(n) => Some(n),
+        _ => None,
+    }
+}
+
+// A Float, or a Num converted.
+pub fn as_float(j: Json) -> Option<Float> {
+    match j {
+        Json::Float(f) => Some(f),
+        Json::Num(n) => Some(n.to_float()),
         _ => None,
     }
 }
