@@ -9,7 +9,7 @@ kio run set_token.kio --dir secret=./secret --kv auth=auth.kv
 kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --rng links_rng --clock now --log log=links.log --listen 127.0.0.1:8080
 ```
 
-For a reproducible run (tests, a replay) fix the two sources: `--rng links_rng=seed:1 --clock now=fixed:2026-11-09T12:00:00Z`; `--log log=-` writes the log to stderr.
+For a reproducible run (tests, a replay) fix the two sources (never in production: a seed makes every slug predictable): `--rng links_rng=seed:1 --clock now=fixed:2026-11-09T12:00:00Z`; `--log log=-` writes the log to stderr.
 
 | Route | Does |
 |---|---|
