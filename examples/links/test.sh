@@ -20,9 +20,14 @@ out=$("$KIO" run set_token.kio --dir secret="$secret" --kv auth="$store/auth.kv"
 case "$out" in *'token set'*) ;; *) echo "FAIL set_token: $out"; exit 1 ;; esac
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 base=http://127.0.0.1:$port
+# The clock is fixed and the slugs seeded, so a run is reproducible; the restart below moves the
+# clock past a link's ttl.
+clock=1794225600000  # 2026-11-09T12:00:00Z
+log=$store/links.log
 
 start() {
     "$KIO" run app.kio --kv links="$store/links.kv" --kv auth="$store/auth.kv" --dir assets=./static \
+        --rng links_rng=seed:1 --clock now=fixed:$clock --log log="$log" \
         --listen 127.0.0.1:$port >/dev/null 2>&1 &
     pid=$!
     for i in $(seq 50); do
@@ -80,11 +85,28 @@ check POST /api/links '{"url":"https://a.example/","slug":"a/b"}' 400 'only A-Z'
 check POST /api/links '{"url":"https://a.example/","slug":""}' 400 '1 to 64' "$auth"
 check POST /api/links '{"url":"https://a.example/","slug":"api"}' 400 'reserved' "$auth"
 check POST /api/links '{"url":"https://a.example/","slug":7}' 400 'must be a string' "$auth"
-# Create: generated and chosen slugs; a taken slug.
-check POST /api/links '{"url":"https://a.example/one"}' 201 '"short":"/' "$auth"
+# created BODY: a 201 whose generated slug is 7 base62 characters; leaves it in $slug.
+b62='[0-9A-Za-z]'
+created() {
+    out=$(curl -s -w ' %{http_code}' -X POST -d "$1" -H "$auth" $base/api/links)
+    case "$out" in *' 201') ;; *) echo "FAIL POST $1: want 201, got $out"; exit 1 ;; esac
+    slug=$(printf '%s' "${out% 201}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["slug"])')
+    case "$slug" in $b62$b62$b62$b62$b62$b62$b62) ;; *) echo "FAIL generated slug: $slug"; exit 1 ;; esac
+    n=$((n + 1))
+}
+# Create: generated and chosen slugs; a taken slug; the fixed clock as created_ms; a ttl.
+created '{"url":"https://a.example/one"}'
+first=$slug
+check GET /api/links "" 200 "\"created_ms\":$clock,\"hits\":0,\"short\":\"/$first\""
 check POST /api/links '{"url":"https://b.example/?q=1&r=2","slug":"docs"}' 201 '"slug":"docs"' "$auth"
 check POST /api/links '{"url":"https://c.example/","slug":"docs"}' 409 'is taken' "$auth"
-check POST /api/links '{"url":"http://d.example/","slug":null}' 201 '"hits":0' "$auth"
+created '{"url":"http://d.example/","slug":null}'
+second=$slug
+[ "$first" != "$second" ] || { echo "FAIL two generated slugs are the same: $first"; exit 1; }
+n=$((n + 1))
+check POST /api/links '{"url":"https://t.example/","slug":"temp","ttl_s":60}' 201 '"ttl_s":60' "$auth"
+check POST /api/links '{"url":"https://t.example/","slug":"bad","ttl_s":"x"}' 400 'must be an integer' "$auth"
+check POST /api/links '{"url":"https://t.example/","slug":"bad","ttl_s":0}' 400 'ttl_s must be 1 to' "$auth"
 # Redirects count hits.
 redirect /docs 'https://b.example/?q=1&r=2'
 redirect /docs 'https://b.example/?q=1&r=2'
@@ -100,13 +122,15 @@ done
 wait $pids
 check GET /api/links "" 200 '"hits":22,"short":"/docs"'
 # Sorting and paging.
-redirect /2 'http://d.example/'
-check GET '/api/links?limit=1' "" 200 '{"items":[{"hits":22,"short":"/docs"'
-check GET '/api/links?offset=1&limit=1' "" 200 '{"items":[{"hits":1,"short":"/2"'
-check GET '/api/links?offset=1&limit=1' "" 200 '"total":3'
+redirect "/$second" 'http://d.example/'
+check GET '/api/links?limit=1' "" 200 "{\"items\":[{\"created_ms\":$clock,\"hits\":22,\"short\":\"/docs\""
+check GET '/api/links?offset=1&limit=1' "" 200 "{\"items\":[{\"created_ms\":$clock,\"hits\":1,\"short\":\"/$second\""
+check GET '/api/links?offset=1&limit=1' "" 200 '"total":4'
 check GET '/api/links?offset=9' "" 200 '"items":[]'
 check GET '/api/links?limit=x' "" 400 'limit must be an integer'
 check GET '/api/links?limit=501' "" 400 'limit must be 0 to 500'
+# A link with a ttl redirects while the clock is before it.
+redirect /temp 'https://t.example/'
 # HTML: escaped, top links in order, the stylesheet from the granted Dir.
 check POST /api/links '{"url":"https://e.example/?a=<script>&b=\"x\"","slug":"xss"}' 201 '"slug":"xss"' "$auth"
 check GET / "" 200 'https://e.example/?a=&lt;script&gt;&amp;b=&quot;x&quot;'
@@ -134,13 +158,33 @@ check GET /api/links "" 200 '"hits":22,"short":"/docs"'
 check DELETE /api/links/xss "" 204 '' "$auth"
 check DELETE /api/links/xss "" 404 'no link xss' "$auth"
 check GET /xss "" 404 'not found'
-# Restart on the same store: links and counts remain, and new slugs do not reuse old ones.
+# A re-created slug starts at 0 hits (a follow racing a delete can leave a count behind).
+check POST /api/links '{"url":"https://g.example/","slug":"again"}' 201 '"slug":"again"' "$auth"
+redirect /again 'https://g.example/'
+check GET /api/links "" 200 '"hits":1,"short":"/again"'
+check DELETE /api/links/again "" 204 '' "$auth"
+check POST /api/links '{"url":"https://g.example/","slug":"again"}' 201 '"hits":0' "$auth"
+check GET /api/links "" 200 '"hits":0,"short":"/again"'
+check DELETE /api/links/again "" 204 '' "$auth"
+# Restart on the same store, 61 s later: links and counts remain, the link with a 60 s ttl is
+# gone, and a new generated slug is neither of the earlier ones.
 stop
+clock=$((clock + 61000))
 start
 check GET /api/links "" 200 '"hits":22,"short":"/docs"'
-check GET /api/links "" 200 '"total":3'
+check GET /api/links "" 200 '"total":4'
 redirect /docs 'https://b.example/?q=1&r=2'
 check GET /api/links "" 200 '"hits":23,"short":"/docs"'
-check POST /api/links '{"url":"https://f.example/"}' 201 '"short":"/3"' "$auth"
+check GET /temp "" 410 'has expired'
+check GET /api/links "" 200 '"hits":1,"short":"/temp"'
+created '{"url":"https://f.example/"}'
+[ "$slug" != "$first" ] && [ "$slug" != "$second" ] || { echo "FAIL a generated slug came back: $slug"; exit 1; }
+n=$((n + 1))
+# The program's log: one `req N: ` line per create and delete, nothing else.
+grep -qE '^req [0-9]+: create docs https://b\.example/\?q=1&r=2$' "$log" || { echo "FAIL log lacks the docs create"; cat "$log"; exit 1; }
+grep -qE "^req [0-9]+: create $first https://a\.example/one$" "$log" || { echo "FAIL log lacks the first create"; cat "$log"; exit 1; }
+grep -qE '^req [0-9]+: delete xss https://e\.example/\?a=<script>&b="x"$' "$log" || { echo "FAIL log lacks the xss delete"; cat "$log"; exit 1; }
+[ "$(grep -c '^req [0-9]*: \(create\|delete\) ' "$log")" = "$(wc -l <"$log" | tr -d ' ')" ] || { echo "FAIL log has other lines"; cat "$log"; exit 1; }
+n=$((n + 4))
 echo "links ok ($n checks)"
 status=0

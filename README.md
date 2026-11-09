@@ -18,10 +18,11 @@ fn main(req: Incoming, res: Outgoing, public: Dir) -> Result<(), WebErr> {
 ```
 
 ```
-main : req body header_names header_values method target, res send, public read
+$ kio check app.kio | grep '^main'
+main              : req body header_names header_values method target, res send, public read
 ```
 
-**Status:** the library and its tests run today. Serving needs `kio run --listen`, kiolang web task W7.
+**Status:** the library, its tests and the example apps run today under `kio run --listen`.
 
 ## Use
 
@@ -119,7 +120,9 @@ fn create(r: web::Request) -> web::Response {
 }
 ```
 
-Three full apps are built this way: [examples/notes](examples/notes) stores notes as files in a `Dir` (list, create, write, remove), [examples/kvnotes](examples/kvnotes) is the same API over a `Kv` with a `swap`-based id counter, and [examples/links](examples/links) is a link shortener: bearer-token auth, redirects that count hits, an HTML page, static files, and a `Kv` file that survives restarts.
+Three full apps are built this way: [examples/notes](examples/notes) stores notes as files in a `Dir` (list, create, write, remove), [examples/kvnotes](examples/kvnotes) is the same API over a `Kv` with a `swap`-based id counter, and [examples/links](examples/links) is a link shortener: bearer-token auth, redirects that count hits, links that expire (a `Clock`), random slugs (an `Rng`), a `Log` of creates and deletes, an HTML page, static files, and a `Kv` file that survives restarts.
+
+The links app lists with two `scan`s (records and hit counts, a page at a time) and counts a hit with one `add`. It stores only the SHA-256 hex of the bearer token and compares a presented token's hash with `ct_eq`.
 
 ## WebSockets
 

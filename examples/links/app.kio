@@ -1,19 +1,21 @@
 // A link shortener for a small team, over a granted Kv.
-// `kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --listen 127.0.0.1:8080`
+// `kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --rng links_rng --clock now --log log=links.log --listen 127.0.0.1:8080`
 //   GET    /                  HTML page: the top 20 links by hits
 //   GET    /static/<file>     a file from `assets`
-//   GET    /<slug>            302 to the link's URL, counting the hit
+//   GET    /<slug>            302 to the link's URL, counting the hit; 410 once its ttl has passed
 //   GET    /api/links         links by hits, most first; ?offset= and ?limit= (default 50, at most 500)
-//   POST   /api/links         {"url": .., "slug": optional} creates a link (bearer token)
+//   POST   /api/links         {"url": .., "slug": optional, "ttl_s": optional} creates a link (bearer token)
 //   DELETE /api/links/<slug>  removes a link (bearer token)
-// A link is stored under `link/<slug>` as {"url"} and its hit count under `hits/<slug>` (decimal
-// text, counted with `add`); `next` is the counter that names links created without a slug. The
-// key `token` in `auth` is the SHA-256 hex of the API token (set_token.kio stores it).
+// A link is stored under `link/<slug>` as {"url", "created_ms", "ttl_s"?} and its hit count under
+// `hits/<slug>` (decimal text, counted with `add`). A link created without a slug gets 7 random
+// base62 characters from `links_rng`; `created_ms` comes from `now`; creates and deletes are
+// written to `log`. The key `token` in `auth` is the SHA-256 hex of the API token (set_token.kio
+// stores it).
 mod web;
 mod api;
 
-fn main(req: Incoming, res: Outgoing, links: Kv, auth: Kv, assets: Dir) -> Result<(), WebErr> {
-    web::send(res, handle(web::request(req), links, auth, assets))
+fn main(req: Incoming, res: Outgoing, links: Kv, auth: Kv, assets: Dir, links_rng: Rng, now: Clock, log: Log) -> Result<(), WebErr> {
+    web::send(res, handle(web::request(req), links, auth, assets, links_rng, now, log))
 }
 
 enum Act { Home, Follow, List, Create, Delete, Static }
@@ -24,7 +26,7 @@ fn routes() -> List<web::Route<Act>> {
      web::protected(web::delete("/api/links/:slug", Act::Delete)), web::get("/:slug", Act::Follow)]
 }
 
-fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir) -> web::Response {
+fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir, rng: Rng, clock: Clock, log: Log) -> web::Response {
     let m = match web::dispatch_as(routes(), r, authorized(r, auth)) {
         Ok(Some(m)) => m,
         Ok(None) => return web::not_found(),
@@ -34,10 +36,10 @@ fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir) -> web::Response {
     let out = match m.action {
         Act::Home => home(links),
         Act::Static => return web::file(assets, web::param(m, "path")),
-        Act::Follow => follow(links, slug, r.method != "HEAD"),
+        Act::Follow => follow(links, slug, r.method != "HEAD", clock),
         Act::List => list(r, links),
-        Act::Create => create(r, links),
-        Act::Delete => delete(links, slug),
+        Act::Create => create(r, links, rng, clock, log),
+        Act::Delete => delete(links, slug, log),
     };
     // Handlers return Err(response) early, through `?`; either way it is the answer.
     match out {
@@ -64,7 +66,13 @@ fn authorized(r: web::Request, auth: Kv) -> Bool {
 
 // ---- storage
 
-struct Link { slug: Str, url: Str, hits: Int }
+struct Link { slug: Str, url: Str, hits: Int, created_ms: Int, ttl_s: Option<Int> }
+
+// What `link/<slug>` holds.
+struct Record { url: Str, created_ms: Int, ttl_s: Option<Int> }
+
+// The longest ttl: ten years, so `created_ms + ttl_s * 1000` never overflows.
+const MAX_TTL_S: Int = 315360000;
 
 fn key(slug: Str) -> Str { "link/" + slug }
 fn hits_key(slug: Str) -> Str { "hits/" + slug }
@@ -74,23 +82,36 @@ fn storage_error(_e: KvErr) -> web::Response { api::error(500, "storage error") 
 fn encode(l: Link) -> Bytes {
     let mut o: Map<Str, Json> = Map::new();
     o.insert("url", Json::Str(l.url));
+    o.insert("created_ms", Json::Num(l.created_ms));
+    if let Some(t) = l.ttl_s { o.insert("ttl_s", Json::Num(t)); }
     Json::Obj(o).to_json().to_bytes()
 }
 
-fn decode(b: Bytes) -> Option<Str> {
+fn decode(b: Bytes) -> Option<Record> {
     let j = b.to_str().parse_json().ok()?;
-    api::str_field(j, "url")
+    let url = api::str_field(j, "url")?;
+    let created = match j.get("created_ms") { Some(Json::Num(n)) => n, _ => 0 };
+    let ttl: Option<Int> = match j.get("ttl_s") { Some(Json::Num(n)) => Some(n), _ => None };
+    Some(Record { url: url, created_ms: created, ttl_s: ttl })
 }
 
-// The URL of the link stored under `slug`, if there is one.
-fn url_of(links: Kv, slug: Str) -> Result<Option<Str>, web::Response> {
+// The record stored under `slug`, if there is one.
+fn record_of(links: Kv, slug: Str) -> Result<Option<Record>, web::Response> {
     let raw = match links.get(key(slug)).map_err(storage_error)? {
         Some(b) => b,
         None => return Ok(None),
     };
     match decode(raw) {
-        Some(url) => Ok(Some(url)),
+        Some(rec) => Ok(Some(rec)),
         None => Err(api::error(500, "corrupt record for " + slug)),
+    }
+}
+
+// Whether a link with a ttl is past it at `now_ms`.
+fn expired(rec: Record, now_ms: Int) -> Bool {
+    match rec.ttl_s {
+        Some(t) => now_ms >= rec.created_ms + t * 1000,
+        None => false,
     }
 }
 
@@ -117,75 +138,95 @@ fn all_links(links: Kv) -> Result<List<Link>, web::Response> {
     let mut out: List<Link> = [];
     for e in scan_all(links, "link/")? {
         let slug = e.key.strip_prefix("link/").unwrap_or(e.key);
-        let url = match decode(e.value) {
-            Some(u) => u,
+        let rec = match decode(e.value) {
+            Some(r) => r,
             None => return Err(api::error(500, "corrupt record for " + slug)),
         };
-        out.push(Link { slug: slug, url: url, hits: hits.get(slug).unwrap_or(0) });
+        out.push(Link { slug: slug, url: rec.url, hits: hits.get(slug).unwrap_or(0), created_ms: rec.created_ms, ttl_s: rec.ttl_s });
     }
     Ok(out)
 }
 
-// Claim the next counter value: read it, swap it to +1, and read again if another request got there.
-fn take_id(links: Kv) -> Result<Int, web::Response> {
-    for _try in 0..1000 {
-        let old = links.get("next").map_err(storage_error)?;
-        let id = match old {
-            Some(b) => b.to_str().parse_int().unwrap_or(1),
-            None => 1,
-        };
-        if links.swap("next", old, Some((id + 1).to_str().to_bytes())).map_err(storage_error)? { return Ok(id); }
-    }
-    Err(api::error(503, "busy, try again"))
-}
-
 // ---- handlers
 
-// GET /<slug>: one `get` for the URL and one `add` for the hit, which the store counts atomically,
+// GET /<slug>: one `get` for the record and one `add` for the hit, which the store counts atomically,
 // so concurrent hits are all counted. HEAD (link previews, crawlers) redirects without counting.
-fn follow(links: Kv, slug: Str, count: Bool) -> Result<web::Response, web::Response> {
+// A link with a ttl asks the clock, and answers 410 once it has passed.
+fn follow(links: Kv, slug: Str, count: Bool, clock: Clock) -> Result<web::Response, web::Response> {
     if !valid_slug(slug) { return Ok(web::not_found()); }
-    let url = match url_of(links, slug)? {
-        Some(u) => u,
+    let rec = match record_of(links, slug)? {
+        Some(r) => r,
         None => return Ok(web::not_found()),
     };
+    if rec.ttl_s.is_some() && expired(rec, clock.now_ms()) { return Ok(api::error(410, "link " + slug + " has expired")); }
     if count { links.add(hits_key(slug), 1).map_err(storage_error)?; }
-    Ok(web::redirect(302, url))
+    Ok(web::redirect(302, rec.url))
 }
 
 // POST /api/links
-fn create(r: web::Request, links: Kv) -> Result<web::Response, web::Response> {
+fn create(r: web::Request, links: Kv, rng: Rng, clock: Clock, log: Log) -> Result<web::Response, web::Response> {
     let j = api::body(r)?;
     let url = match api::str_field(j, "url") {
         Some(u) => u,
         None => return Err(api::error(400, "missing string field \"url\"")),
     };
     if let Some(why) = url_problem(url) { return Err(api::error(400, why)); }
+    let ttl: Option<Int> = match j.get("ttl_s") {
+        None => None,
+        Some(Json::Null) => None,
+        Some(Json::Num(n)) => {
+            if n < 1 || n > MAX_TTL_S { return Err(api::error(400, "ttl_s must be 1 to " + MAX_TTL_S.to_str() + " seconds")); }
+            Some(n)
+        }
+        Some(_) => return Err(api::error(400, "field \"ttl_s\" must be an integer")),
+    };
+    let created = clock.now_ms();
     match j.get("slug") {
         Some(Json::Str(slug)) => {
             if let Some(why) = slug_problem(slug) { return Err(api::error(400, why)); }
-            let l = Link { slug: slug, url: url, hits: 0 };
+            let l = Link { slug: slug, url: url, hits: 0, created_ms: created, ttl_s: ttl };
             if !claim(links, l)? { return Err(api::error(409, "slug \"" + slug + "\" is taken")); }
+            note(log, "create", l.slug, l.url);
             Ok(api::json(201, view(l)))
         }
-        Some(Json::Null) => generated(links, url),
-        None => generated(links, url),
+        Some(Json::Null) => generated(links, rng, log, url, created, ttl),
+        None => generated(links, rng, log, url, created, ttl),
         Some(_) => Err(api::error(400, "field \"slug\" must be a string")),
     }
 }
 
-// A link named by its counter value in base62; a name someone chose by hand is skipped.
-fn generated(links: Kv, url: Str) -> Result<web::Response, web::Response> {
-    for _try in 0..1000 {
-        let l = Link { slug: base62(take_id(links)?), url: url, hits: 0 };
-        if slug_problem(l.slug).is_none() && claim(links, l)? { return Ok(api::json(201, view(l))); }
+// A link named by 7 random base62 characters (62^7, about 3.5 trillion names); a taken name is
+// drawn again, up to 5 times.
+fn generated(links: Kv, rng: Rng, log: Log, url: Str, created: Int, ttl: Option<Int>) -> Result<web::Response, web::Response> {
+    for _try in 0..5 {
+        let l = Link { slug: slug7(rng), url: url, hits: 0, created_ms: created, ttl_s: ttl };
+        if claim(links, l)? {
+            note(log, "create", l.slug, l.url);
+            return Ok(api::json(201, view(l)));
+        }
     }
-    Err(api::error(503, "busy, try again"))
+    Err(api::error(503, "no free slug found, try again"))
 }
 
-// Store `l` if its slug is free; false if it is taken.
+// One draw in 0..62^7, written in base62 and padded to 7 characters.
+fn slug7(rng: Rng) -> Str {
+    let mut s = base62(rng.int(0, 3521614606208));
+    while s.len() < 7 { s = "0" + s; }
+    s
+}
+
+// Store `l` if its slug is free; false if it is taken. A `follow` racing an earlier `delete` can
+// leave a count under `hits/<slug>`, so a claimed slug's count is reset: it starts at 0.
 fn claim(links: Kv, l: Link) -> Result<Bool, web::Response> {
-    links.swap(key(l.slug), None, Some(encode(l))).map_err(storage_error)
+    if !links.swap(key(l.slug), None, Some(encode(l))).map_err(storage_error)? { return Ok(false); }
+    links.delete(hits_key(l.slug)).map_err(storage_error)?;
+    Ok(true)
+}
+
+// One line in the program's log: `create <slug> <url>` or `delete <slug> <url>`. A line the log
+// refuses (over its budget) is not an error for the request.
+fn note(log: Log, what: Str, slug: Str, url: Str) {
+    let _written = log.write(what + " " + slug + " " + url);
 }
 
 // GET /api/links
@@ -202,10 +243,15 @@ fn list(r: web::Request, links: Kv) -> Result<web::Response, web::Response> {
 }
 
 // DELETE /api/links/<slug>: the record and its count.
-fn delete(links: Kv, slug: Str) -> Result<web::Response, web::Response> {
-    if !valid_slug(slug) || url_of(links, slug)?.is_none() { return Err(api::error(404, "no link " + slug)); }
+fn delete(links: Kv, slug: Str, log: Log) -> Result<web::Response, web::Response> {
+    if !valid_slug(slug) { return Err(api::error(404, "no link " + slug)); }
+    let rec = match record_of(links, slug)? {
+        Some(r) => r,
+        None => return Err(api::error(404, "no link " + slug)),
+    };
     links.delete(key(slug)).map_err(storage_error)?;
     links.delete(hits_key(slug)).map_err(storage_error)?;
+    note(log, "delete", slug, rec.url);
     Ok(web::respond(204, "text/plain", "".to_bytes()))
 }
 
@@ -232,13 +278,15 @@ fn view(l: Link) -> Json {
     o.insert("url", Json::Str(l.url));
     o.insert("hits", Json::Num(l.hits));
     o.insert("short", Json::Str("/" + l.slug));
+    o.insert("created_ms", Json::Num(l.created_ms));
+    if let Some(t) = l.ttl_s { o.insert("ttl_s", Json::Num(t)); }
     Json::Obj(o)
 }
 
 // ---- rules
 
 // Why `url` cannot be a link: an http or https URL with a host, at most 2048 bytes, no spaces or
-// control characters (it goes into a `location` header as is).
+// control characters (it goes into a `location` header and a log line as is).
 fn url_problem(url: Str) -> Option<Str> {
     if url.len() > 2048 { return Some("url is longer than 2048 bytes"); }
     let lower = url.to_lowercase();

@@ -1,5 +1,4 @@
 // A kio-web app: `kio run app.kio --dir public=./public --listen 127.0.0.1:8080`
-// (`--listen` lands with kiolang web task W7).
 mod web;
 
 fn main(req: Incoming, res: Outgoing, public: Dir) -> Result<(), WebErr> {
