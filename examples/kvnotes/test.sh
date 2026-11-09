@@ -4,13 +4,13 @@ set -e
 status=1
 KIO=${KIO:-kio}
 cd "$(dirname "$0")"
-cp ../../web.kio ../../json.kio ../../api.kio .
+cp ../../web.kio ../../api.kio .
 data=$(mktemp -d)  # scratch for concurrent responses
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 "$KIO" check app.kio >/dev/null || { echo "app.kio does not check"; "$KIO" check app.kio; exit 1; }
 "$KIO" run app.kio --kv notes=:memory: --listen 127.0.0.1:$port >/dev/null 2>&1 &
 pid=$!
-trap 'kill $pid 2>/dev/null; wait $pid 2>/dev/null || true; rm -rf "$data" web.kio json.kio api.kio; exit $status' EXIT
+trap 'kill $pid 2>/dev/null; wait $pid 2>/dev/null || true; rm -rf "$data" web.kio api.kio; exit $status' EXIT
 for i in $(seq 50); do
     curl -s -o /dev/null http://127.0.0.1:$port/ && break
     sleep 0.3

@@ -3,7 +3,7 @@
 A JSON notes API over one granted `Dir`, in kio-web. [../kvnotes](../kvnotes) is the same API over `Kv`.
 
 ```
-cp ../../web.kio ../../json.kio ../../api.kio .
+cp ../../web.kio ../../api.kio .
 kio run app.kio --dir notes=./data --listen 127.0.0.1:8080
 ```
 
@@ -30,7 +30,7 @@ $ curl localhost:8080/notes
 $ curl -X PUT -d '{"title":"milk","body":"3 litres"}' localhost:8080/notes/1   # 200; 404 if no such note
 $ curl -X DELETE localhost:8080/notes/1                                          # 204; 404 if no such note
 $ curl -d '{"title":' localhost:8080/notes
-{"error":"..."}                                   # 400, json.kio's message
+{"error":"..."}                                   # 400,'s message
 ```
 
 Ids: note `n` is the file `n.json`. POST takes the largest listed id plus one and uses `create`, which refuses to overwrite and answers `IoErr::Exists` when a racing POST took the id; the loser lists again and retries. Any other error is a 500. PUT is `exists` then `write` (atomic replace); DELETE is `remove`. Each POST and GET /notes lists the directory once.

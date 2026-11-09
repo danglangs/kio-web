@@ -3,7 +3,7 @@
 The [notes](../notes) API over one granted `Kv` instead of a `Dir`, in kio-web. Same routes, same responses.
 
 ```
-cp ../../web.kio ../../json.kio ../../api.kio .
+cp ../../web.kio ../../api.kio .
 kio run app.kio --kv notes=:memory: --listen 127.0.0.1:8080
 ```
 

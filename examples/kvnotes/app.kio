@@ -1,7 +1,6 @@
 // A notes JSON API over a granted Kv: notes under `note/<id>`, ids from a counter under `next`.
 // `kio run app.kio --kv notes=:memory: --listen 127.0.0.1:8080`
 mod web;
-mod json;
 mod api;
 
 fn main(req: Incoming, res: Outgoing, notes: Kv) -> Result<(), WebErr> {
@@ -33,12 +32,12 @@ fn handle(r: web::Request, notes: Kv) -> web::Response {
     }
 }
 
-fn note(id: Int, title: Str, body: Str) -> json::Json {
-    let mut o: Map<Str, json::Json> = Map::new();
-    o.insert("id", json::Json::Num(id));
-    o.insert("title", json::Json::Str(title));
-    o.insert("body", json::Json::Str(body));
-    json::Json::Obj(o)
+fn note(id: Int, title: Str, body: Str) -> Json {
+    let mut o: Map<Str, Json> = Map::new();
+    o.insert("id", Json::Num(id));
+    o.insert("title", Json::Str(title));
+    o.insert("body", Json::Str(body));
+    Json::Obj(o)
 }
 
 fn io_error() -> web::Response { api::error(500, "storage error") }
@@ -58,7 +57,7 @@ fn create(r: web::Request, notes: Kv) -> web::Response {
         Ok(id) => id,
         Err(_) => return io_error(),
     };
-    match notes.set(key(id), json::encode(note(id, f[0], f[1])).to_bytes()) {
+    match notes.set(key(id), note(id, f[0], f[1]).to_json().to_bytes()) {
         Ok(_) => api::json(201, note(id, f[0], f[1])),
         Err(_) => io_error(),
     }
@@ -77,9 +76,9 @@ fn take_id(notes: Kv) -> Result<Int, KvErr> {
     Err(KvErr::Full)
 }
 
-fn load(notes: Kv, id: Int) -> Option<json::Json> {
+fn load(notes: Kv, id: Int) -> Option<Json> {
     match notes.get(key(id)) {
-        Ok(Some(b)) => match json::parse(b.to_str()) {
+        Ok(Some(b)) => match b.to_str().parse_json() {
             Ok(j) => Some(j),
             Err(_) => None,
         },
@@ -107,11 +106,11 @@ fn list(r: web::Request, notes: Kv) -> web::Response {
     };
     let mut found = api::flatten(keys.map(id_of));
     found.sort();
-    let mut all: List<json::Json> = [];
+    let mut all: List<Json> = [];
     for id in api::page(found, r).items {
         if let Some(j) = load(notes, id) { all.push(j); }
     }
-    api::json(200, json::Json::Arr(all))
+    api::json(200, Json::Arr(all))
 }
 
 // PUT /notes/:id: replace an existing note. Swapping against the value just read means a note
@@ -130,7 +129,7 @@ fn replace(r: web::Request, notes: Kv, id: Str) -> web::Response {
         Ok(f) => f,
         Err(e) => return e,
     };
-    let new = Some(json::encode(note(n, f[0], f[1])).to_bytes());
+    let new = Some(note(n, f[0], f[1]).to_json().to_bytes());
     match notes.swap(key(n), old, new) {
         Ok(done) => {
             if done { return api::json(200, note(n, f[0], f[1])); }

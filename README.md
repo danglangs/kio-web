@@ -62,35 +62,25 @@ fn handle(r: web::Request, notes: Dir) -> web::Response {
 
 ## JSON
 
-Copy [json.kio](json.kio) beside your app and write `mod json;`. It decodes into a `Json` tree: `Null`, `Bool`, `Num(Int)`, `Float(Float)`, `Str`, `Arr(List<Json>)`, `Obj(Map<Str, Json>)`.
+`Json` is built into kio (see kio's language.md): `Null`, `Bool(Bool)`, `Num(Int)`, `Float(Float)`, `Str(Str)`, `Arr(List<Json>)`, `Obj(Map<Str, Json>)`. No `mod json;` and no file to copy.
 
 ```rust
-mod json;
-
 // The "name" field of a JSON body, or "anonymous".
 fn name(body: Str) -> Str {
-    match json::parse(body) {
-        Ok(j) => json::as_str(json::get(j, "name").unwrap_or(json::Json::Null)).unwrap_or("anonymous"),
+    match body.parse_json() {
+        Ok(j) => j.get("name").and_then(|n| n.as_str()).unwrap_or("anonymous"),
         Err(_) => "anonymous",
     }
 }
 ```
 
-| Function | Does |
-|---|---|
-| `parse(s)` | `Ok(Json)`, or `Err` naming what was expected and the byte offset, as `expected ',' or '}' at byte 17` |
-| `encode(j)` | compact text, keys in `Map` order; `parse(encode(j))` gives `j` back |
-| `get(j, key)`, `at(j, i)` | an object field, an array element |
-| `as_str`, `as_int`, `as_bool`, `as_list` | the payload, if `j` has that type |
-| `as_float(j)` | a `Float` from `Float`, or a `Num` converted |
+`s.parse_json()` gives `Result<Json, Str>`; `j.to_json()` gives compact text; `get`, `at`, `as_str`, `as_int`, `as_float`, `as_bool`, `as_list`, `as_map` return `Option`.
 
-The full JSON number grammar parses. A number with no fraction or exponent that fits `Int` is `Num`; any other (`1.5`, `2e3`, `1.0`, or an integer beyond `Int`) is `Float`. A literal beyond the range of `Float` (`1e999`) is an error. `encode` writes a `Float` in Rust's `{}` form, adding `.0` when it has no `.` or exponent, so `parse(encode(j))` keeps `Float` and `Num` apart; NaN and infinities cannot be JSON and encode as `null`. Nesting deeper than 64 is an error. A repeated key keeps the last value.
-
-Parsing time is linear in the input (kiolang P2a or later): 10 KB parses in 0.08 s and needs `--fuel 600000000`, 100 KB in 0.6 s and needs `--fuel 6000000000`.
+Migrating from json.kio (removed): delete `mod json;` and the copy of json.kio, then `json::parse(s)` is `s.parse_json()`, `json::encode(j)` is `j.to_json()`, `json::Json::X` is `Json::X`, `json::get(j, k)` is `j.get(k)`, and `json::as_str(x)` is `x.as_str()` (likewise the other accessors). Nesting limit is now 128 (was 64).
 
 ## API helpers
 
-Copy [api.kio](api.kio) too and declare `mod web; mod json; mod api;`. It builds on both, which stay independent of each other: an app that uses only web.kio needs neither json.kio nor api.kio.
+Copy [api.kio](api.kio) too and declare `mod web; mod api;`. It builds on web.kio and the built-in `Json`; an app that uses only web.kio does not need api.kio.
 
 | Function | Does |
 |---|---|
@@ -107,7 +97,7 @@ Copy [api.kio](api.kio) too and declare `mod web; mod json; mod api;`. It builds
 fn create(r: web::Request) -> web::Response {
     let j = match api::body(r) { Ok(j) => j, Err(e) => return e };
     match api::str_field(j, "title") {
-        Some(t) => api::json(201, json::Json::Str(t)),
+        Some(t) => api::json(201, Json::Str(t)),
         None => api::error(400, "missing string field \"title\""),
     }
 }

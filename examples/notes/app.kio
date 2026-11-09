@@ -1,7 +1,6 @@
 // A notes JSON API over a granted Dir: one file `<id>.json` per note.
 // `kio run app.kio --dir notes=./data --listen 127.0.0.1:8080`
 mod web;
-mod json;
 mod api;
 
 fn main(req: Incoming, res: Outgoing, notes: Dir) -> Result<(), WebErr> {
@@ -35,12 +34,12 @@ fn handle(r: web::Request, notes: Dir) -> web::Response {
 
 fn file(id: Int) -> Str { id.to_str() + ".json" }
 
-fn note(id: Int, title: Str, body: Str) -> json::Json {
-    let mut o: Map<Str, json::Json> = Map::new();
-    o.insert("id", json::Json::Num(id));
-    o.insert("title", json::Json::Str(title));
-    o.insert("body", json::Json::Str(body));
-    json::Json::Obj(o)
+fn note(id: Int, title: Str, body: Str) -> Json {
+    let mut o: Map<Str, Json> = Map::new();
+    o.insert("id", Json::Num(id));
+    o.insert("title", Json::Str(title));
+    o.insert("body", Json::Str(body));
+    Json::Obj(o)
 }
 
 fn io_error() -> web::Response { api::error(500, "storage error") }
@@ -82,7 +81,7 @@ fn store(notes: Dir, title: Str, body: Str) -> web::Response {
             Ok(id) => id,
             Err(_) => return io_error(),
         };
-        let doc = json::encode(note(id, title, body)).to_bytes();
+        let doc = note(id, title, body).to_json().to_bytes();
         match notes.create(file(id), doc) {
             Ok(_) => return api::json(201, note(id, title, body)),
             Err(IoErr::Exists) => {}
@@ -92,9 +91,9 @@ fn store(notes: Dir, title: Str, body: Str) -> web::Response {
     api::error(503, "too many concurrent writers")
 }
 
-fn load(notes: Dir, id: Int) -> Option<json::Json> {
+fn load(notes: Dir, id: Int) -> Option<Json> {
     match notes.read(file(id)) {
-        Ok(b) => match json::parse(b.to_str()) {
+        Ok(b) => match b.to_str().parse_json() {
             Ok(j) => Some(j),
             Err(_) => None,
         },
@@ -119,11 +118,11 @@ fn list(r: web::Request, notes: Dir) -> web::Response {
         Ok(v) => v,
         Err(_) => return io_error(),
     };
-    let mut all: List<json::Json> = [];
+    let mut all: List<Json> = [];
     for id in api::page(found, r).items {
         if let Some(j) = load(notes, id) { all.push(j); }
     }
-    api::json(200, json::Json::Arr(all))
+    api::json(200, Json::Arr(all))
 }
 
 // PUT /notes/:id: replace an existing note.
@@ -141,7 +140,7 @@ fn replace(r: web::Request, notes: Dir, id: Str) -> web::Response {
         Ok(f) => f,
         Err(e) => return e,
     };
-    match notes.write(file(n), json::encode(note(n, f[0], f[1])).to_bytes()) {
+    match notes.write(file(n), note(n, f[0], f[1]).to_json().to_bytes()) {
         Ok(_) => api::json(200, note(n, f[0], f[1])),
         Err(_) => io_error(),
     }

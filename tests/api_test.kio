@@ -1,7 +1,6 @@
 // Tests for api.kio: `kio run tests/api_test.kio` prints 0 when every check passes,
 // or the number of the first failing check.
 mod web;
-mod json;
 mod api;
 
 fn req(body: Str) -> web::Request {
@@ -14,7 +13,7 @@ fn main() -> Int {
     if e.status != 404 { return 1; }
     if e.body.to_str() != "{\"error\":\"no \\\"x\\\"\"}" { return 2; }
     if e.headers[0].value != "application/json" { return 3; }
-    let r = api::json(201, json::Json::Arr([json::Json::Num(1), json::Json::Null]));
+    let r = api::json(201, Json::Arr([Json::Num(1), Json::Null]));
     if r.status != 201 { return 4; }
     if r.body.to_str() != "[1,null]" { return 5; }
     match api::body(req("{\"a\":\"x\",\"n\":7}")) {

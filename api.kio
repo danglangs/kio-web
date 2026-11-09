@@ -1,31 +1,31 @@
-// JSON API helpers over web.kio and json.kio. The app declares `mod web; mod json; mod api;`.
+// JSON API helpers over web.kio. The app declares `mod web; mod api;`.
 
 // Respond with `j` encoded as application/json.
-pub fn json(status: Int, j: json::Json) -> web::Response {
-    web::json(status, json::encode(j))
+pub fn json(status: Int, j: Json) -> web::Response {
+    web::json(status, j.to_json())
 }
 
 // Respond with `{"error": msg}`.
 pub fn error(status: Int, msg: Str) -> web::Response {
-    let mut o: Map<Str, json::Json> = Map::new();
-    o.insert("error", json::Json::Str(msg));
-    json(status, json::Json::Obj(o))
+    let mut o: Map<Str, Json> = Map::new();
+    o.insert("error", Json::Str(msg));
+    json(status, Json::Obj(o))
 }
 
 // The request body as JSON, or a 400 response carrying the parse message.
-pub fn body(r: web::Request) -> Result<json::Json, web::Response> {
-    match json::parse(r.body.to_str()) {
+pub fn body(r: web::Request) -> Result<Json, web::Response> {
+    match r.body.to_str().parse_json() {
         Ok(j) => Ok(j),
         Err(e) => Err(error(400, e)),
     }
 }
 
-pub fn str_field(j: json::Json, key: Str) -> Option<Str> {
-    json::as_str(json::get(j, key)?)
+pub fn str_field(j: Json, key: Str) -> Option<Str> {
+    j.get(key)?.as_str()
 }
 
-pub fn int_field(j: json::Json, key: Str) -> Option<Int> {
-    json::as_int(json::get(j, key)?)
+pub fn int_field(j: Json, key: Str) -> Option<Int> {
+    j.get(key)?.as_int()
 }
 
 // The string fields `keys` of the request body, in that order, or a 400 response naming the
