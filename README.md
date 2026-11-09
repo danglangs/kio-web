@@ -30,15 +30,16 @@ kio has no package manager: copy [web.kio](web.kio) beside your app and write `m
 | Function | Does |
 |---|---|
 | `request(req)`, `send(res, r)` | convert between the host's raw parts and `Request` / `Response` |
-| `route(r, method, pattern)` | match `"/hello/:name"`; `Some(params)` keyed by `":name"` |
-| `get`, `post`, `put`, `delete`, `dispatch(routes, r)`, `param(m, name)` | a route table; see Routing |
+| `route(r, method, pattern)` | match `"/hello/:name"` or `"/static/*path"`; `Some(params)` keyed by `":name"` / `"*path"` |
+| `get`, `post`, `put`, `delete`, `protected(route)`, `dispatch(routes, r)`, `dispatch_as(routes, r, authorized)`, `param(m, name)` | a route table; see Routing |
 | `query(r)`, `decode(s)` | query parameters, percent-decoded |
-| `header(r, name)` | a header value; names are lowercase |
+| `header(r, name)`, `bearer(r)` | a header value (names are lowercase); the `authorization: Bearer` token |
+| `unauthorized()` | a 401 with `www-authenticate: Bearer` |
 | `text`, `json`, `html`, `respond`, `not_found`, `redirect(status, location)` | build responses |
 | `html_escape(s)` | `s` safe in HTML text and quoted attributes (`& < > " '`) |
 | `json_str(s)` | a JSON string literal |
-| `file(dir, name)` | serve a file from a granted `Dir` |
-| `upgrade(msg)`, `bearer(msg)` | a WebSocket's upgrade request as a `Request`; its `authorization: Bearer` token; see WebSockets |
+| `file(dir, name)` | serve a file from a granted `Dir`; a `..` segment is a 404 |
+| `upgrade(msg)`, `ws_bearer(msg)` | a WebSocket's upgrade request as a `Request`; its `authorization: Bearer` token; see WebSockets |
 
 ## Routing
 
@@ -57,6 +58,20 @@ fn handle(r: web::Request, notes: Dir) -> web::Response {
         None => web::not_found(),
     }
 }
+```
+
+**Wildcard.** A last segment `*name` matches the rest of the path, slashes included: `web::get("/static/*path", Act::Static)` then `web::file(assets, web::param(m, "path"))`. `file` refuses `..` segments itself.
+
+**HEAD.** A HEAD request matches GET routes, so handlers answer it as GET. The host sends the headers, with the content-length of the body the handler built, and no body.
+
+**Auth.** `web::protected(web::post("/notes", Act::Make))` marks a route. `web::dispatch_as(routes, r, authorized)` returns `Ok(Some(m))`, `Ok(None)` for no route, or `Err(401 response)` when the first matching route is protected and `authorized` is false; the app computes `authorized` (for example from `web::bearer(r)` and a stored token). Plain `dispatch` never matches a protected route.
+
+```rust
+let m = match web::dispatch_as(routes(), r, authorized(r, auth)) {
+    Ok(Some(m)) => m,
+    Ok(None) => return web::not_found(),
+    Err(res) => return res,
+};
 ```
 
 **Why the table holds an enum, not handlers.** kio's rule 1: a function value or closure cannot take, capture or return a capability, so `Route { handler: fn(Request) -> Response }` cannot hold a handler that needs the app's `Dir` or `Kv`. The table is pure data and `handle` calls the named function, passing only the capability it needs. The authority report stays exact: `list` shows `notes list read`, `show` shows `notes read`, and `routes`/`dispatch` show none. Handlers that need no capability could be function values, but one mixed style would split the table, so the examples use one enum.
@@ -91,7 +106,7 @@ Copy [api.kio](api.kio) too and declare `mod web; mod api;`. It builds on web.ki
 | `str_field(j, key)`, `int_field(j, key)` | an object field, if present with that type |
 | `int_param(s, what)` | `s` as `Ok(Int)`, or a 400 saying `what` must be an integer |
 | `first(xs)`, `flatten(opts)` | the first element; the present values of a `List<Option<T>>` |
-| `page(xs, r)` | `Page<T> { items, total, offset }` from the query's `offset` and `limit` |
+| `page(xs, r)` | `Ok(Page<T> { items, total, offset, limit })` from the query's `offset` (default 0) and `limit` (default 50, at most 500), or a 400 for a negative or non-integer value or a limit over 500 |
 | `str_fields(r, keys)` | the body's string fields in order as `Ok(List<Str>)`, or a 400 naming the bad JSON or missing field |
 
 ```rust
@@ -108,7 +123,7 @@ Three full apps are built this way: [examples/notes](examples/notes) stores note
 
 ## WebSockets
 
-A WebSocket server's `main` takes `msg: WsMessage, conn: WsSend` (kio runs it once per event: open, each message, close). Every event of a connection sees the same upgrade request, so `web::upgrade(msg)` routes it with `route` or `dispatch`, and `web::bearer(msg)` reads its token:
+A WebSocket server's `main` takes `msg: WsMessage, conn: WsSend` (kio runs it once per event: open, each message, close). Every event of a connection sees the same upgrade request, so `web::upgrade(msg)` routes it with `route` or `dispatch`, and `web::ws_bearer(msg)` reads its token (`web::bearer(r)` is the HTTP one):
 
 ```rust
 fn main(msg: WsMessage, conn: WsSend, auth: Kv, counts: Kv) -> Result<(), WsErr> {

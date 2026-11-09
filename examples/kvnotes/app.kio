@@ -98,7 +98,7 @@ fn show(notes: Kv, id: Str) -> web::Response {
     }
 }
 
-// GET /notes: notes in id order; ?offset= and ?limit= pick a page.
+// GET /notes: notes in id order; ?offset= and ?limit= (default 50, at most 500) pick a page.
 fn list(r: web::Request, notes: Kv) -> web::Response {
     let keys = match notes.keys("note/") {
         Ok(v) => v,
@@ -107,7 +107,11 @@ fn list(r: web::Request, notes: Kv) -> web::Response {
     let mut found = api::flatten(keys.map(id_of));
     found.sort();
     let mut all: List<Json> = [];
-    for id in api::page(found, r).items {
+    let p = match api::page(found, r) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    for id in p.items {
         if let Some(j) = load(notes, id) { all.push(j); }
     }
     api::json(200, Json::Arr(all))

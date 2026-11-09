@@ -112,14 +112,18 @@ fn show(notes: Dir, id: Str) -> web::Response {
     }
 }
 
-// GET /notes: notes in id order; ?offset= and ?limit= pick a page.
+// GET /notes: notes in id order; ?offset= and ?limit= (default 50, at most 500) pick a page.
 fn list(r: web::Request, notes: Dir) -> web::Response {
     let found = match ids(notes) {
         Ok(v) => v,
         Err(_) => return io_error(),
     };
     let mut all: List<Json> = [];
-    for id in api::page(found, r).items {
+    let p = match api::page(found, r) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    for id in p.items {
         if let Some(j) = load(notes, id) { all.push(j); }
     }
     api::json(200, Json::Arr(all))

@@ -8,6 +8,10 @@ fn req(body: Str) -> web::Request {
     web::Request { method: "POST", path: "/", query: "", headers: hs, body: body.to_bytes() }
 }
 
+fn get(query: Str) -> web::Request {
+    web::Request { method: "GET", path: "/", query: query, headers: [], body: "".to_bytes() }
+}
+
 fn main() -> Int {
     let e = api::error(404, "no \"x\"");
     if e.status != 404 { return 1; }
@@ -68,13 +72,39 @@ fn main() -> Int {
     let flat = api::flatten(opts);
     if flat.len() != 2 || flat[1] != 3 { return 31; }
     let xs = [1, 2, 3, 4, 5];
-    let all = api::page(xs, req(""));
-    if all.items.len() != 5 || all.total != 5 { return 32; }
-    let p = api::page(xs, web::Request { method: "GET", path: "/", query: "offset=1&limit=2", headers: [], body: "".to_bytes() });
-    if p.items.len() != 2 || p.items[0] != 2 || p.total != 5 || p.offset != 1 { return 33; }
-    let past = api::page(xs, web::Request { method: "GET", path: "/", query: "offset=9&limit=2", headers: [], body: "".to_bytes() });
-    if past.items.len() != 0 { return 34; }
-    let neg = api::page(xs, web::Request { method: "GET", path: "/", query: "offset=-3&limit=1", headers: [], body: "".to_bytes() });
-    if neg.items.len() != 1 || neg.items[0] != 1 { return 35; }
+    match api::page(xs, req("")) {
+        Ok(all) => { if all.items.len() != 5 || all.total != 5 || all.limit != 50 { return 32; } }
+        Err(_) => { return 33; }
+    }
+    match api::page(xs, get("offset=1&limit=2")) {
+        Ok(p) => { if p.items.len() != 2 || p.items[0] != 2 || p.total != 5 || p.offset != 1 || p.limit != 2 { return 34; } }
+        Err(_) => { return 35; }
+    }
+    match api::page(xs, get("offset=9&limit=2")) {
+        Ok(p) => { if p.items.len() != 0 { return 36; } }
+        Err(_) => { return 37; }
+    }
+    match api::page(xs, get("offset=-3")) {
+        Ok(_) => { return 38; }
+        Err(x) => { if x.status != 400 || !x.body.to_str().contains("offset must be 0 to") { return 39; } }
+    }
+    match api::page(xs, get("limit=x")) {
+        Ok(_) => { return 40; }
+        Err(x) => { if x.status != 400 || !x.body.to_str().contains("limit must be an integer") { return 41; } }
+    }
+    match api::page(xs, get("limit=501")) {
+        Ok(_) => { return 42; }
+        Err(x) => { if !x.body.to_str().contains("limit must be 0 to 500") { return 43; } }
+    }
+    match api::page(xs, get("limit=500")) {
+        Ok(p) => { if p.items.len() != 5 || p.limit != 500 { return 44; } }
+        Err(_) => { return 45; }
+    }
+    let mut big: List<Int> = [];
+    for i in 0..120 { big.push(i); }
+    match api::page(big, req("")) {
+        Ok(p) => { if p.items.len() != 50 || p.total != 120 { return 46; } }
+        Err(_) => { return 47; }
+    }
     0
 }

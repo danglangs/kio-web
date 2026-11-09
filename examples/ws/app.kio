@@ -31,7 +31,7 @@ fn authorized(msg: WsMessage, auth: Kv) -> Bool {
         Ok(Some(t)) => t.to_str(),
         _ => return false,
     };
-    match web::bearer(msg) {
+    match web::ws_bearer(msg) {
         Some(got) => want != "" && got == want,
         None => false,
     }

@@ -3,7 +3,7 @@
 //   GET    /                  HTML page: the top 20 links by hits
 //   GET    /static/<file>     a file from `assets`
 //   GET    /<slug>            302 to the link's URL, counting the hit
-//   GET    /api/links         links by hits, most first; ?offset= and ?limit= (default 50, at most 100)
+//   GET    /api/links         links by hits, most first; ?offset= and ?limit= (default 50, at most 500)
 //   POST   /api/links         {"url": .., "slug": optional} creates a link (bearer token)
 //   DELETE /api/links/<slug>  removes a link (bearer token)
 // A link is stored under `link/<slug>` as {"url", "hits"}; `next` is the counter that names
@@ -15,35 +15,28 @@ fn main(req: Incoming, res: Outgoing, links: Kv, auth: Kv, assets: Dir) -> Resul
     web::send(res, handle(web::request(req), links, auth, assets))
 }
 
-enum Act { Home, Follow, List, Create, Delete }
+enum Act { Home, Follow, List, Create, Delete, Static }
 
 fn routes() -> List<web::Route<Act>> {
-    [web::get("/", Act::Home), web::get("/api/links", Act::List), web::post("/api/links", Act::Create),
-     web::delete("/api/links/:slug", Act::Delete), web::get("/:slug", Act::Follow)]
+    [web::get("/", Act::Home), web::get("/static/*path", Act::Static), web::get("/api/links", Act::List),
+     web::protected(web::post("/api/links", Act::Create)),
+     web::protected(web::delete("/api/links/:slug", Act::Delete)), web::get("/:slug", Act::Follow)]
 }
 
 fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir) -> web::Response {
-    // A route pattern matches one segment per `:name`, so the static tree is matched by prefix.
-    if let Some(name) = r.path.strip_prefix("/static/") {
-        if r.method == "GET" { return web::file(assets, name); }
-    }
-    let m = match web::dispatch(routes(), r) {
-        Some(m) => m,
-        None => return web::not_found(),
+    let m = match web::dispatch_as(routes(), r, authorized(r, auth)) {
+        Ok(Some(m)) => m,
+        Ok(None) => return web::not_found(),
+        Err(res) => return res,
     };
     let slug = web::param(m, "slug");
     let out = match m.action {
         Act::Home => home(links),
-        Act::Follow => follow(links, slug),
+        Act::Static => return web::file(assets, web::param(m, "path")),
+        Act::Follow => follow(links, slug, r.method != "HEAD"),
         Act::List => list(r, links),
-        Act::Create => {
-            if !authorized(r, auth) { return unauthorized(); }
-            create(r, links)
-        }
-        Act::Delete => {
-            if !authorized(r, auth) { return unauthorized(); }
-            delete(links, slug)
-        }
+        Act::Create => create(r, links),
+        Act::Delete => delete(links, slug),
     };
     // Handlers return Err(response) early, through `?`; either way it is the answer.
     match out {
@@ -61,7 +54,7 @@ fn authorized(r: web::Request, auth: Kv) -> Bool {
         Ok(Some(t)) => t.to_str(),
         _ => return false,
     };
-    match web::header(r, "authorization").and_then(|h| h.strip_prefix("Bearer ")) {
+    match web::bearer(r) {
         Some(got) => want != "" && same(got, want),
         None => false,
     }
@@ -78,12 +71,6 @@ fn same(a: Str, b: Str) -> Bool {
         if x[i] != y[i] { diff += 1; }
     }
     diff == 0
-}
-
-fn unauthorized() -> web::Response {
-    let mut res = api::error(401, "missing or wrong bearer token");
-    res.headers.push(web::Header { name: "www-authenticate", value: "Bearer" });
-    res
 }
 
 // ---- storage
@@ -146,7 +133,8 @@ fn take_id(links: Kv) -> Result<Int, web::Response> {
 
 // GET /<slug>: count the hit, then redirect. The swap fails if another hit landed in between;
 // read again and retry, so no hit is lost.
-fn follow(links: Kv, slug: Str) -> Result<web::Response, web::Response> {
+// GET /<slug> counts the hit; HEAD (link previews, crawlers) redirects without counting.
+fn follow(links: Kv, slug: Str, count: Bool) -> Result<web::Response, web::Response> {
     if !valid_slug(slug) { return Ok(web::not_found()); }
     for _try in 0..1000 {
         let s = match load(links, slug)? {
@@ -154,6 +142,7 @@ fn follow(links: Kv, slug: Str) -> Result<web::Response, web::Response> {
             None => return Ok(web::not_found()),
         };
         let mut l = s.link;
+        if !count { return Ok(web::redirect(302, l.url)); }
         l.hits += 1;
         if links.swap(key(slug), Some(s.raw), Some(encode(l))).map_err(storage_error)? {
             return Ok(web::redirect(302, l.url));
@@ -199,44 +188,15 @@ fn claim(links: Kv, l: Link) -> Result<Bool, web::Response> {
 
 // GET /api/links
 fn list(r: web::Request, links: Kv) -> Result<web::Response, web::Response> {
-    let p = paging(r)?;
-    let sorted = by_hits(all_links(links)?);
+    let p = api::page(by_hits(all_links(links)?), r)?;
     let mut items: List<Json> = [];
-    let mut i = p.offset;
-    while i < sorted.len() && items.len() < p.limit {
-        items.push(view(sorted[i]));
-        i += 1;
-    }
+    for l in p.items { items.push(view(l)); }
     let mut o: Map<Str, Json> = Map::new();
     o.insert("items", Json::Arr(items));
-    o.insert("total", Json::Num(sorted.len()));
+    o.insert("total", Json::Num(p.total));
     o.insert("offset", Json::Num(p.offset));
     o.insert("limit", Json::Num(p.limit));
     Ok(api::json(200, Json::Obj(o)))
-}
-
-struct Paging { offset: Int, limit: Int }
-
-// ?offset= (default 0) and ?limit= (default 50, at most 100), or a 400 naming the bad one.
-fn paging(r: web::Request) -> Result<Paging, web::Response> {
-    let q = web::query(r);
-    let offset = count_param(q, "offset", 0, 1000000)?;
-    let limit = count_param(q, "limit", 50, 100)?;
-    Ok(Paging { offset: offset, limit: limit })
-}
-
-fn count_param(q: Map<Str, Str>, name: Str, default: Int, max: Int) -> Result<Int, web::Response> {
-    let s = match q.get(name) {
-        Some(s) => s,
-        None => return Ok(default),
-    };
-    match s.parse_int() {
-        Some(n) => {
-            if n < 0 || n > max { return Err(api::error(400, name + " must be 0 to " + max.to_str())); }
-            Ok(n)
-        }
-        None => Err(api::error(400, name + " must be an integer")),
-    }
 }
 
 // DELETE /api/links/<slug>

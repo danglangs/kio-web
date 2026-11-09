@@ -14,7 +14,7 @@ kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --li
 | `GET /` | HTML page: the top 20 links by hits |
 | `GET /static/<file>` | a file from `assets` |
 | `GET /<slug>` | 302 to the link's URL; counts the hit (`swap`, retried, so concurrent hits are all counted) |
-| `GET /api/links` | links by hits, most first; `?offset=`, `?limit=` (default 50, at most 100); 400 on a bad value |
+| `GET /api/links` | links by hits, most first; `?offset=`, `?limit=` (default 50, at most 500); 400 on a bad value |
 | `POST /api/links` | `{"url": .., "slug": optional}`: 201, 400 (bad JSON, URL or slug), 409 (slug taken); token needed |
 | `DELETE /api/links/<slug>` | 204 or 404; token needed |
 
@@ -52,4 +52,4 @@ take_id          : links get swap
 
 The server reads and swaps links, reads the token and reads files under `static/`. It cannot write the token, write files, or make requests.
 
-`./test.sh` sets a token, serves the app on a free port and checks every route with curl: auth failures, bad JSON and URLs, taken and reserved slugs, redirects and hit counts, 20 concurrent hits counted exactly, paging and sort order, HTML escaping, static files, delete, and a restart on the same store with links and counts intact.
+`./test.sh` sets a token, serves the app on a free port and checks every route with curl: auth failures, bad JSON and URLs, taken and reserved slugs, redirects and hit counts, 20 concurrent hits counted exactly, paging and sort order, HTML escaping, static files, HEAD, delete, and a restart on the same store with links and counts intact.

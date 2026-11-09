@@ -104,7 +104,7 @@ check GET '/api/links?offset=1&limit=1' "" 200 '{"items":[{"hits":1,"short":"/2"
 check GET '/api/links?offset=1&limit=1' "" 200 '"total":3'
 check GET '/api/links?offset=9' "" 200 '"items":[]'
 check GET '/api/links?limit=x' "" 400 'limit must be an integer'
-check GET '/api/links?limit=500' "" 400 'limit must be 0 to 100'
+check GET '/api/links?limit=501' "" 400 'limit must be 0 to 500'
 # HTML: escaped, top links in order, the stylesheet from the granted Dir.
 check POST /api/links '{"url":"https://e.example/?a=<script>&b=\"x\"","slug":"xss"}' 201 '"slug":"xss"' "$auth"
 check GET / "" 200 'https://e.example/?a=&lt;script&gt;&amp;b=&quot;x&quot;'
@@ -115,6 +115,19 @@ n=$((n + 2))
 check GET /static/style.css "" 200 'border-collapse'
 check GET /static/nope.css "" 404 'not found'
 check GET /static/../app.kio "" 404 'not found'
+check GET /static/ "" 404 'not found'
+# HEAD: the GET headers (content-length of the body the handler built), no body.
+head=$(curl -s -I $base/static/style.css | tr -d '\r')
+len=$(curl -s $base/static/style.css | wc -c | tr -d ' ')
+case "$head" in "HTTP/1.1 200"*) ;; *) echo "FAIL HEAD /static/style.css: $head"; exit 1 ;; esac
+case "$head" in *"content-length: $len"*) ;; *) echo "FAIL HEAD content-length want $len: $head"; exit 1 ;; esac
+case "$head" in *"content-type: text/css"*) ;; *) echo "FAIL HEAD content-type: $head"; exit 1 ;; esac
+n=$((n + 3))
+# HEAD on a short link redirects without counting a hit (link previews must not inflate counts).
+head=$(curl -s -I $base/docs | tr -d '\r')
+case "$head" in "HTTP/1.1 302"*) ;; *) echo "FAIL HEAD /docs: $head"; exit 1 ;; esac
+n=$((n + 1))
+check GET /api/links "" 200 '"hits":22,"short":"/docs"'
 # Delete.
 check DELETE /api/links/xss "" 204 '' "$auth"
 check DELETE /api/links/xss "" 404 'no link xss' "$auth"

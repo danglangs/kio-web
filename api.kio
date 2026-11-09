@@ -64,19 +64,34 @@ pub fn flatten<T>(xs: List<Option<T>>) -> List<T> {
     out
 }
 
-// One page of a listing: `items` are elements offset.. of `total`.
-pub struct Page<T> { items: List<T>, total: Int, offset: Int }
+// One page of a listing: `items` are elements offset.. of `total`, at most `limit` of them.
+pub struct Page<T> { items: List<T>, total: Int, offset: Int, limit: Int }
 
-// The page of `xs` that the query parameters `offset` (default 0) and `limit` (default: all) ask for.
-pub fn page<T>(xs: List<T>, r: web::Request) -> Page<T> {
+// The page of `xs` that the query parameters `offset` (default 0) and `limit` (default 50, at
+// most 500) ask for, or a 400 naming a value that is not a non-negative integer (or a limit over 500).
+pub fn page<T>(xs: List<T>, r: web::Request) -> Result<Page<T>, web::Response> {
     let q = web::query(r);
-    let offset = q.get("offset").and_then(|s| s.parse_int()).unwrap_or(0);
-    let limit = q.get("limit").and_then(|s| s.parse_int()).unwrap_or(xs.len());
+    let offset = count(q, "offset", 0, 1000000000)?;
+    let limit = count(q, "limit", 50, 500)?;
     let mut items: List<T> = [];
-    let mut i = if offset < 0 { 0 } else { offset };
+    let mut i = offset;
     while i < xs.len() && items.len() < limit {
         items.push(xs[i]);
         i += 1;
     }
-    Page { items: items, total: xs.len(), offset: offset }
+    Ok(Page { items: items, total: xs.len(), offset: offset, limit: limit })
+}
+
+fn count(q: Map<Str, Str>, name: Str, default: Int, max: Int) -> Result<Int, web::Response> {
+    let s = match q.get(name) {
+        Some(s) => s,
+        None => return Ok(default),
+    };
+    match s.parse_int() {
+        Some(n) => {
+            if n < 0 || n > max { return Err(error(400, name + " must be 0 to " + max.to_str())); }
+            Ok(n)
+        }
+        None => Err(error(400, name + " must be an integer")),
+    }
 }

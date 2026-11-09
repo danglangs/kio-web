@@ -74,5 +74,51 @@ fn main() -> Int {
     let rd = web::redirect(302, "https://example.com/");
     if rd.status != 302 { return 30; }
     if rd.headers.len() != 2 || rd.headers[1].name != "location" || rd.headers[1].value != "https://example.com/" { return 31; }
+    // bearer, wildcard, HEAD, protected routes.
+    let mut authed = req("GET", "/", "");
+    authed.headers.push(web::Header { name: "authorization", value: "Bearer s3cret" });
+    if web::bearer(authed).unwrap_or("") != "s3cret" { return 32; }
+    if web::bearer(req("GET", "/", "")).is_some() { return 33; }
+    authed.headers[0].value = "Basic s3cret";
+    if web::bearer(authed).is_some() { return 34; }
+    match web::route(req("GET", "/static/a/b.css", ""), "GET", "/static/*path") {
+        Some(p) => if p.get("*path").unwrap_or("") != "a/b.css" { return 35; },
+        None => { return 36; }
+    }
+    match web::route(req("GET", "/static/x", ""), "GET", "/static/*path") {
+        Some(p) => if p.get("*path").unwrap_or("") != "x" { return 37; },
+        None => { return 38; }
+    }
+    match web::route(req("GET", "/other/x", ""), "GET", "/static/*path") { Some(_) => { return 39; } None => {} }
+    match web::route(req("GET", "/static", ""), "GET", "/static/*path") { Some(_) => { return 40; } None => {} }
+    let wild = [web::get("/static/*path", 1)];
+    match web::dispatch(wild, req("GET", "/static/a/../b", "")) {
+        Some(m) => { if web::param(m, "path") != "a/../b" { return 41; } }
+        None => { return 42; }
+    }
+    match web::route(req("HEAD", "/notes", ""), "GET", "/notes") { Some(_) => {} None => { return 43; } }
+    match web::route(req("HEAD", "/notes", ""), "POST", "/notes") { Some(_) => { return 44; } None => {} }
+    match web::dispatch(table(), req("HEAD", "/notes/7", "")) {
+        Some(m) => { if m.action != Act::Show { return 45; } }
+        None => { return 46; }
+    }
+    let mixed = [web::get("/", 1), web::protected(web::post("/p", 2)), web::protected(web::get("/q/:id", 3))];
+    match web::dispatch_as(mixed, req("POST", "/p", ""), true) {
+        Ok(Some(m)) => { if m.action != 2 { return 47; } }
+        _ => { return 48; }
+    }
+    match web::dispatch_as(mixed, req("POST", "/p", ""), false) {
+        Err(x) => {
+            if x.status != 401 { return 49; }
+            if x.headers[1].name != "www-authenticate" { return 50; }
+        }
+        _ => { return 51; }
+    }
+    match web::dispatch_as(mixed, req("GET", "/", ""), false) {
+        Ok(Some(m)) => { if m.action != 1 { return 52; } }
+        _ => { return 53; }
+    }
+    match web::dispatch_as(mixed, req("GET", "/nope/x", ""), false) { Ok(None) => {} _ => { return 54; } }
+    match web::dispatch(mixed, req("POST", "/p", "")) { Some(_) => { return 55; } None => {} }
     0
 }

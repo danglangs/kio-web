@@ -30,11 +30,17 @@ pub fn upgrade(msg: WsMessage) -> Request {
 }
 
 // The token of the upgrade's `authorization: Bearer <token>` header, if it has one.
-pub fn bearer(msg: WsMessage) -> Option<Str> {
+pub fn ws_bearer(msg: WsMessage) -> Option<Str> {
     msg.header("authorization")?.strip_prefix("Bearer ")
 }
 
-// Send a Response through the host.
+// The token of the request's `authorization: Bearer <token>` header, if it has one.
+pub fn bearer(r: Request) -> Option<Str> {
+    header(r, "authorization")?.strip_prefix("Bearer ")
+}
+
+// Send a Response through the host. For a HEAD request the host sends the headers, with the
+// content-length of the body, and no body, so a handler answers HEAD as it answers GET.
 pub fn send(res: Outgoing, r: Response) -> Result<(), WebErr> {
     let mut names: List<Str> = [];
     let mut values: List<Str> = [];
@@ -71,15 +77,23 @@ pub fn header(r: Request, name: Str) -> Option<Str> {
     None
 }
 
-// Match `pattern` such as "/hello/:name"; Some(params) on a hit, keyed by ":name".
+// Match `pattern` such as "/hello/:name"; Some(params) on a hit, keyed by ":name". A last segment
+// `*name` matches the rest of the path, slashes included ("/static/*path" matches "/static/a/b.css"
+// with "*path" = "a/b.css"). A HEAD request matches GET patterns.
 pub fn route(r: Request, method: Str, pattern: Str) -> Option<Map<Str, Str>> {
-    if r.method != method { return None; }
+    if r.method != method && !(r.method == "HEAD" && method == "GET") { return None; }
     let want = pattern.split("/");
     let got = r.path.split("/");
-    if want.len() != got.len() { return None; }
+    let last = want.len() - 1;
+    let rest = want[last].starts_with("*");
+    if rest { if got.len() < want.len() { return None; } } else if want.len() != got.len() { return None; }
     let mut params: Map<Str, Str> = Map::new();
     for i in 0..want.len() {
-        if want[i].starts_with(":") {
+        if rest && i == last {
+            let mut tail = got[i];
+            for j in (i + 1)..got.len() { tail = tail + "/" + got[j]; }
+            params.insert(want[i], tail);
+        } else if want[i].starts_with(":") {
             params.insert(want[i], got[i]);
         } else if want[i] != got[i] {
             return None;
@@ -91,29 +105,61 @@ pub fn route(r: Request, method: Str, pattern: Str) -> Option<Map<Str, Str>> {
 // A route table entry: a request that matches `method` and `pattern` selects `action`, a value the
 // app defines (usually an enum), not a function. Handlers that use a Dir or Kv cannot be function
 // values (kio's rule 1), so the app matches on the action and calls the named function.
-pub struct Route<A> { method: Str, pattern: Str, action: A }
+// A `protected` route needs `dispatch_as` to be told the request is authorized.
+pub struct Route<A> { method: Str, pattern: Str, action: A, auth: Bool }
 
 // The route a request selected, and its path parameters keyed by ":name".
 pub struct Matched<A> { action: A, params: Map<Str, Str> }
 
-pub fn get<A>(pattern: Str, action: A) -> Route<A> { Route { method: "GET", pattern: pattern, action: action } }
-pub fn post<A>(pattern: Str, action: A) -> Route<A> { Route { method: "POST", pattern: pattern, action: action } }
-pub fn put<A>(pattern: Str, action: A) -> Route<A> { Route { method: "PUT", pattern: pattern, action: action } }
-pub fn delete<A>(pattern: Str, action: A) -> Route<A> { Route { method: "DELETE", pattern: pattern, action: action } }
+pub fn get<A>(pattern: Str, action: A) -> Route<A> { Route { method: "GET", pattern: pattern, action: action, auth: false } }
+pub fn post<A>(pattern: Str, action: A) -> Route<A> { Route { method: "POST", pattern: pattern, action: action, auth: false } }
+pub fn put<A>(pattern: Str, action: A) -> Route<A> { Route { method: "PUT", pattern: pattern, action: action, auth: false } }
+pub fn delete<A>(pattern: Str, action: A) -> Route<A> { Route { method: "DELETE", pattern: pattern, action: action, auth: false } }
 
-// The first route in `routes` that matches `r`, in list order.
+// `rt` as a route that needs authorization: `web::protected(web::post("/notes", Act::Make))`.
+pub fn protected<A>(rt: Route<A>) -> Route<A> {
+    Route { method: rt.method, pattern: rt.pattern, action: rt.action, auth: true }
+}
+
+// The first route in `routes` that matches `r`, in list order. Protected routes never match: use
+// `dispatch_as` for a table that has them.
 pub fn dispatch<A>(routes: List<Route<A>>, r: Request) -> Option<Matched<A>> {
     for rt in routes {
-        if let Some(p) = route(r, rt.method, rt.pattern) {
-            return Some(Matched { action: rt.action, params: p });
+        if !rt.auth {
+            if let Some(p) = route(r, rt.method, rt.pattern) {
+                return Some(Matched { action: rt.action, params: p });
+            }
         }
     }
     None
 }
 
-// The path parameter `name` (without the colon) of a match, or "".
+// `dispatch` for a table with protected routes; `authorized` says whether the request may use them
+// (the app decides, e.g. from `bearer(r)`). Ok(None) is no route; Err is the 401 for the first
+// matching route when it is protected and `authorized` is false.
+pub fn dispatch_as<A>(routes: List<Route<A>>, r: Request, authorized: Bool) -> Result<Option<Matched<A>>, Response> {
+    for rt in routes {
+        if let Some(p) = route(r, rt.method, rt.pattern) {
+            if rt.auth && !authorized { return Err(unauthorized()); }
+            return Ok(Some(Matched { action: rt.action, params: p }));
+        }
+    }
+    Ok(None)
+}
+
+// 401 with `www-authenticate: Bearer` and a JSON error.
+pub fn unauthorized() -> Response {
+    let mut res = json(401, "{\"error\":\"missing or wrong bearer token\"}");
+    res.headers.push(Header { name: "www-authenticate", value: "Bearer" });
+    res
+}
+
+// The path parameter `name` (without the colon or star) of a match, or "".
 pub fn param<A>(m: Matched<A>, name: Str) -> Str {
-    m.params.get(":" + name).unwrap_or("")
+    match m.params.get(":" + name) {
+        Some(v) => v,
+        None => m.params.get("*" + name).unwrap_or(""),
+    }
 }
 
 // Query parameters, percent-decoded.
@@ -205,9 +251,11 @@ pub fn html_escape(s: Str) -> Str {
 }
 
 // Serve the file a request path names, such as "/index.html", from `files`. The leading `/` is
-// dropped, since `Dir` paths are relative; the host refuses `..` and paths leading outside.
+// dropped, since `Dir` paths are relative. A `..` segment is a 404 here, and the host refuses
+// paths leading outside too.
 pub fn file(files: Dir, path: Str) -> Response {
     let name = strip_slash(path);
+    if name.split("/").contains("..") { return not_found(); }
     match files.read(name) {
         Ok(b) => respond(200, ctype(name), b),
         // A missing, refused or escaping path is a 404, so a client cannot learn which paths exist.
