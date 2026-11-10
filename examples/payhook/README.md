@@ -138,3 +138,16 @@ KIO=path/to/kio ./examples/payhook/test.sh      # from the kio-web root
 ```
 
 `test.sh` starts [hook.py](hook.py), a stand-in chat webhook that checks the injected `Authorization` and can be told to answer 500 or hang; signs requests with [sign.py](sign.py) (Python `hmac`); fixes the clock; and checks: health and routing; signatures (valid, several `v1`, wrong key, tampered body or timestamp, malformed headers, skew exactly 300 and 301 s either way); idempotency (replays, a replay with another body, 10 concurrent copies of one event, a replay after a restart); the message for each type and amount; no message for other types or replays; the chat failing (500, timeout), retries triggered by a health check, a 404 and a replay, the third failure marking `failed`, nothing sent after that, recovery, pending events surviving a restart; the log lines; and that neither key reaches the audit log, the log or stderr. [db.py](db.py) reads the database for the assertions.
+
+## Reviewing it by authority (pilot notes)
+
+payhook was written by a coding agent that read only kio's docs and kio-web; a reviewer then approved each step from its authority diff and the tests, without reading `app.kio`.
+
+| Step | What the reviewer approved | Matches the brief? |
+|---|---|---|
+| 2 | `stripe: Hmac` used only to `verify`; a `Clock` | Yes: no `sign`, and the run grants `:verify` |
+| 3 | a `Db` (`exec`), a `Log` | Yes |
+| 4 | `slack: Http`, `send_all` only | Yes: one host, its key injected |
+| 5 | `db query` | Yes: reading pending events back |
+
+What the diffs answered: which outside systems the code can touch, and how (verify, never sign; POST to one host). What they could not: whether the signature result is acted on, what text goes to the chat, and which rows the SQL touches. The tests carried those (124 checks). One gap neither caught: a run that dies during an event's third attempt leaves it `pending` with `attempts = 3`, never retried or marked failed.

@@ -27,4 +27,5 @@ KIO="$KIO" examples/kvnotes/test.sh
 KIO="$KIO" examples/sqlnotes/test.sh
 KIO="$KIO" examples/ws/test.sh
 KIO="$KIO" examples/links/test.sh
+KIO="$KIO" examples/payhook/test.sh
 echo ok
