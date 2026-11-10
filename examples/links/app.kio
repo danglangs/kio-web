@@ -1,5 +1,5 @@
 // A link shortener for a small team, over a granted Kv.
-// `kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --rng links_rng --clock now --log log=links.log --listen 127.0.0.1:8080`
+// `kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --rng links_rng --clock now --log log=links.log --http hook=hooks.example --http-methods hook=POST --listen 127.0.0.1:8080`
 //   GET    /                  HTML page: the top 20 links by hits
 //   GET    /static/<file>     a file from `assets`
 //   GET    /<slug>            302 to the link's URL, counting the hit; 410 once its ttl has passed
@@ -10,23 +10,38 @@
 // `hits/<slug>` (decimal text, counted with `add`). A link created without a slug gets 7 random
 // base62 characters from `links_rng`; `created_ms` comes from `now`; creates and deletes are
 // written to `log`. The key `token` in `auth` is the SHA-256 hex of the API token (set_token.kio
-// stores it).
+// stores it). After answering a create, the app POSTs {"event":"created","slug","url"} to `/` on
+// `hook`.
 mod web;
 mod api;
+mod http;
 
-fn main(req: Incoming, res: Outgoing, links: Kv, auth: Kv, assets: Dir, links_rng: Rng, now: Clock, log: Log) -> Result<(), WebErr> {
+fn main(req: Incoming, res: Outgoing, links: Kv, auth: Kv, assets: Dir, links_rng: Rng, now: Clock, log: Log, hook: Http) -> Result<(), WebErr> {
     let a = handle(web::request(req), links, auth, assets, links_rng, now, log);
     web::send(res, a.res)?;
-    // The client has its answer once `send` returns, so it does not wait for the count. A count
-    // the store refuses is lost: the redirect already went out.
+    // The client has its answer once `send` returns, so it waits for neither the count nor the
+    // webhook. A count the store refuses is lost: the redirect already went out.
     if let Some(slug) = a.hit { let _n = links.add(hits_key(slug), 1); }
+    if let Some(l) = a.made { notify(hook, log, l); }
     Ok(())
 }
 
-// The response, and the link whose hit `main` counts after sending it.
-struct Answer { res: web::Response, hit: Option<Str> }
+// The response, the link whose hit `main` counts after sending it, and the link it announces.
+struct Answer { res: web::Response, hit: Option<Str>, made: Option<Link> }
 
-fn answer(res: web::Response) -> Answer { Answer { res: res, hit: None } }
+fn answer(res: web::Response) -> Answer { Answer { res: res, hit: None, made: None } }
+
+// POST {"event":"created","slug":..,"url":..} to `hook`. A failed post is logged and not retried:
+// the link exists either way.
+fn notify(hook: Http, log: Log, l: Link) {
+    let mut o: Map<Str, Json> = Map::new();
+    o.insert("event", Json::Str("created"));
+    o.insert("slug", Json::Str(l.slug));
+    o.insert("url", Json::Str(l.url));
+    if let Err(e) = http::json_request(hook, "POST", "/", Json::Obj(o)) {
+        let _written = log.write("hook failed for " + l.slug + ": " + e);
+    }
+}
 
 enum Act { Home, Follow, List, Create, Delete, Static }
 
@@ -45,7 +60,8 @@ fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir, rng: Rng, clock: Cl
     let slug = web::param(m, "slug");
     // A GET that redirects counts a hit; HEAD (link previews, crawlers) does not.
     let mut counts = false;
-    let out = match m.action {
+    let mut made: Option<Link> = None;
+    let out: Result<web::Response, web::Response> = match m.action {
         Act::Home => home(links),
         Act::Static => return answer(web::file(assets, web::param(m, "path"))),
         Act::Follow => {
@@ -53,7 +69,13 @@ fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir, rng: Rng, clock: Cl
             follow(links, slug, clock)
         }
         Act::List => list(r, links),
-        Act::Create => create(r, links, rng, clock, log),
+        Act::Create => match create(r, links, rng, clock, log) {
+            Ok(l) => {
+                made = Some(l);
+                Ok(api::json(201, view(l)))
+            }
+            Err(res) => Err(res),
+        },
         Act::Delete => delete(links, slug, log),
     };
     // Handlers return Err(response) early, through `?`; either way it is the answer.
@@ -62,7 +84,7 @@ fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir, rng: Rng, clock: Cl
         Err(res) => res,
     };
     let hit: Option<Str> = if counts && res.status == 302 { Some(slug) } else { None };
-    Answer { res: res, hit: hit }
+    Answer { res: res, hit: hit, made: made }
 }
 
 // ---- auth
@@ -180,7 +202,7 @@ fn follow(links: Kv, slug: Str, clock: Clock) -> Result<web::Response, web::Resp
 }
 
 // POST /api/links
-fn create(r: web::Request, links: Kv, rng: Rng, clock: Clock, log: Log) -> Result<web::Response, web::Response> {
+fn create(r: web::Request, links: Kv, rng: Rng, clock: Clock, log: Log) -> Result<Link, web::Response> {
     let j = api::body(r)?;
     let url = match api::str_field(j, "url") {
         Some(u) => u,
@@ -203,7 +225,7 @@ fn create(r: web::Request, links: Kv, rng: Rng, clock: Clock, log: Log) -> Resul
             let l = Link { slug: slug, url: url, hits: 0, created_ms: created, ttl_s: ttl };
             if !claim(links, l)? { return Err(api::error(409, "slug \"" + slug + "\" is taken")); }
             note(log, "create", l.slug, l.url);
-            Ok(api::json(201, view(l)))
+            Ok(l)
         }
         Some(Json::Null) => generated(links, rng, log, url, created, ttl),
         None => generated(links, rng, log, url, created, ttl),
@@ -213,12 +235,12 @@ fn create(r: web::Request, links: Kv, rng: Rng, clock: Clock, log: Log) -> Resul
 
 // A link named by 7 random base62 characters (62^7, about 3.5 trillion names); a taken name is
 // drawn again, up to 5 times.
-fn generated(links: Kv, rng: Rng, log: Log, url: Str, created: Int, ttl: Option<Int>) -> Result<web::Response, web::Response> {
+fn generated(links: Kv, rng: Rng, log: Log, url: Str, created: Int, ttl: Option<Int>) -> Result<Link, web::Response> {
     for _try in 0..5 {
         let l = Link { slug: slug7(rng), url: url, hits: 0, created_ms: created, ttl_s: ttl };
         if claim(links, l)? {
             note(log, "create", l.slug, l.url);
-            return Ok(api::json(201, view(l)));
+            return Ok(l);
         }
     }
     Err(api::error(503, "no free slug found, try again"))

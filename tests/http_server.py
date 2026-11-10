@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""A small JSON server for tests/http_test.kio: `http_server.py PORT`."""
+"""A small JSON server for tests/http_test.kio: `http_server.py PORT [EVENTS]`. With EVENTS, each
+POST body is also appended to that file as a line (a webhook receiver for examples/links)."""
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -27,6 +28,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def echo(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
+        if self.command == "POST" and len(sys.argv) > 2:
+            with open(sys.argv[2], "a") as f:
+                f.write(raw + "\n")
         body = json.loads(raw) if raw else None
         self.reply(200, json.dumps({
             "method": self.command,

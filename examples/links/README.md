@@ -1,13 +1,16 @@
 # links
 
-A link shortener for a small team, in kio-web: a JSON API behind a bearer token, redirects that count hits, links that can expire, and an HTML page of the top links. Links and counts live in a `Kv` file, so they survive restarts; random slugs come from an `Rng`, timestamps from a `Clock`, and creates and deletes go to a `Log`.
+A link shortener for a small team, in kio-web: a JSON API behind a bearer token, redirects that count hits, links that can expire, and an HTML page of the top links. Links and counts live in a `Kv` file, so they survive restarts; random slugs come from an `Rng`, timestamps from a `Clock`, creates and deletes go to a `Log`, and each create is announced to a webhook over an `Http` grant.
 
 ```
-cp ../../web.kio ../../api.kio .
+cp ../../web.kio ../../api.kio ../../http.kio .
 echo a-long-random-team-token > secret/token
 kio run set_token.kio --dir secret=./secret --kv auth=auth.kv
-kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --rng links_rng --clock now --log log=links.log --listen 127.0.0.1:8080
+kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --rng links_rng --clock now --log log=links.log \
+    --http hook=hooks.example --http-methods hook=POST --listen 127.0.0.1:8080
 ```
+
+After the 201 of a create is sent, the app POSTs `{"event":"created","slug":..,"url":..}` to `/` on the `hook` host (the client does not wait for it); a failed post is a `hook failed for <slug>: <why>` line in the log, not retried. kio has no optional grants, so `hook` is required; point it at a local receiver (`--http hook=http://127.0.0.1:9000`) if nothing listens. `test.sh` uses `../../tests/http_server.py PORT EVENTS` as the receiver.
 
 For a reproducible run (tests, a replay) fix the two sources (never in production: a seed makes every slug predictable): `--rng links_rng=seed:1 --clock now=fixed:2026-11-09T12:00:00Z`; `--log log=-` writes the log to stderr.
 

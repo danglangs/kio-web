@@ -120,7 +120,7 @@ fn create(r: web::Request) -> web::Response {
 }
 ```
 
-Four full apps are built this way: [examples/notes](examples/notes) stores notes as files in a `Dir` (list, create, write, remove), [examples/kvnotes](examples/kvnotes) is the same API over a `Kv` with a `swap`-based id counter, [examples/sqlnotes](examples/sqlnotes) the same API over a SQLite `Db` (one table, `RETURNING`, `LIMIT ? OFFSET ?`), and [examples/links](examples/links) is a link shortener: bearer-token auth, redirects that count hits, links that expire (a `Clock`), random slugs (an `Rng`), a `Log` of creates and deletes, an HTML page, static files, and a `Kv` file that survives restarts.
+Four full apps are built this way: [examples/notes](examples/notes) stores notes as files in a `Dir` (list, create, write, remove), [examples/kvnotes](examples/kvnotes) is the same API over a `Kv` with a `swap`-based id counter, [examples/sqlnotes](examples/sqlnotes) the same API over a SQLite `Db` (one table, `RETURNING`, `LIMIT ? OFFSET ?`), and [examples/links](examples/links) is a link shortener: bearer-token auth, redirects that count hits, links that expire (a `Clock`), random slugs (an `Rng`), a `Log` of creates and deletes, a webhook POSTed after each create (an `Http` grant, after the response is sent), an HTML page, static files, and a `Kv` file that survives restarts.
 
 The links app lists with two `scan`s (records and hit counts, a page at a time) and counts a hit with one `add`. It stores only the SHA-256 hex of the bearer token and compares a presented token's hash with `ct_eq`.
 

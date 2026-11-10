@@ -1,15 +1,17 @@
 #!/bin/sh
 # Store a token, serve the links app on a free port and exercise every route with curl, then
-# restart it on the same store and check that links and counts remain. KIO=path/to/kio.
+# restart it on the same store and check that links and counts remain; a local receiver collects
+# the webhook events. KIO=path/to/kio.
 set -e
 status=1
 KIO=${KIO:-kio}
 cd "$(dirname "$0")"
-cp ../../web.kio ../../api.kio .
+cp ../../web.kio ../../api.kio ../../http.kio .
 secret=$(mktemp -d)  # the token file; the stores must be outside any granted Dir
 store=$(mktemp -d)
 pid=
-trap 'if [ -n "$pid" ]; then kill $pid 2>/dev/null; wait $pid 2>/dev/null || true; fi; rm -rf "$secret" "$store" web.kio api.kio; exit $status' EXIT
+hook=
+trap 'for p in $pid $hook; do kill $p 2>/dev/null; wait $p 2>/dev/null || true; done; rm -rf "$secret" "$store" web.kio api.kio http.kio; exit $status' EXIT
 "$KIO" check app.kio >/dev/null || { echo "app.kio does not check"; "$KIO" check app.kio; exit 1; }
 token=links-token-$$-0123456789
 printf 'short\n' >"$secret/token"
@@ -18,8 +20,15 @@ case "$out" in *'at least 16'*) ;; *) echo "FAIL set_token short: $out"; exit 1 
 printf '%s\n' "$token" >"$secret/token"
 out=$("$KIO" run set_token.kio --dir secret="$secret" --kv auth="$store/auth.kv" 2>&1)
 case "$out" in *'token set'*) ;; *) echo "FAIL set_token: $out"; exit 1 ;; esac
-port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+port=$(free_port)
 base=http://127.0.0.1:$port
+# The webhook receiver: each POST body becomes a line of $events.
+hook_port=$(free_port)
+events=$store/events
+: >"$events"
+python3 ../../tests/http_server.py "$hook_port" "$events" &
+hook=$!
 # The clock is fixed and the slugs seeded, so a run is reproducible; the restart below moves the
 # clock past a link's ttl.
 clock=1794225600000  # 2026-11-09T12:00:00Z
@@ -28,6 +37,7 @@ log=$store/links.log
 start() {
     "$KIO" run app.kio --kv links="$store/links.kv" --kv auth="$store/auth.kv" --dir assets=./static \
         --rng links_rng=seed:1 --clock now=fixed:$clock --log log="$log" \
+        --http hook=http://127.0.0.1:$hook_port --http-methods hook=POST \
         --listen 127.0.0.1:$port >/dev/null 2>&1 &
     pid=$!
     for i in $(seq 50); do
@@ -197,5 +207,14 @@ grep -qE "^req [0-9]+: create $first https://a\.example/one$" "$log" || { echo "
 grep -qE '^req [0-9]+: delete xss https://e\.example/\?a=<script>&b="x"$' "$log" || { echo "FAIL log lacks the xss delete"; cat "$log"; exit 1; }
 [ "$(grep -c '^req [0-9]*: \(create\|delete\) ' "$log")" = "$(wc -l <"$log" | tr -d ' ')" ] || { echo "FAIL log has other lines"; cat "$log"; exit 1; }
 n=$((n + 4))
+# The webhook: one event per create, sent after the 201, so it may land just after.
+for i in $(seq 50); do
+    [ "$(wc -l <"$events" | tr -d ' ')" = 9 ] && break
+    sleep 0.1
+done
+[ "$(wc -l <"$events" | tr -d ' ')" = 9 ] || { echo "FAIL want 9 webhook events"; cat "$events"; exit 1; }
+grep -qxF '{"event":"created","slug":"docs","url":"https://b.example/?q=1&r=2"}' "$events" || { echo "FAIL no docs event"; cat "$events"; exit 1; }
+grep -qxF "{\"event\":\"created\",\"slug\":\"$first\",\"url\":\"https://a.example/one\"}" "$events" || { echo "FAIL no first event"; cat "$events"; exit 1; }
+n=$((n + 3))
 echo "links ok ($n checks)"
 status=0
