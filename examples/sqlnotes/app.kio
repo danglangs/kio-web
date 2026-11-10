@@ -1,0 +1,133 @@
+// A notes JSON API over a granted SQLite database: one table, ids from INTEGER PRIMARY KEY.
+// `kio run app.kio --db notes=:memory: --listen 127.0.0.1:8080`
+mod web;
+mod api;
+
+fn main(req: Incoming, res: Outgoing, notes: Db) -> Result<(), WebErr> {
+    let r = web::request(req);
+    web::send(res, handle(r, notes))
+}
+
+// What a request asks for. Handlers use the app's capability, so they cannot be function values
+// in a route table (rule 1); the table holds these ids and `handle` calls the named function.
+enum Act { Create, List, Show, Replace, Delete }
+
+fn routes() -> List<web::Route<Act>> {
+    [web::post("/notes", Act::Create), web::get("/notes", Act::List), web::get("/notes/:id", Act::Show),
+     web::put("/notes/:id", Act::Replace), web::delete("/notes/:id", Act::Delete)]
+}
+
+const SCHEMA: Str = "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL)";
+
+fn handle(r: web::Request, notes: Db) -> web::Response {
+    // Each request runs in a fresh sandbox; the table is made once and this is then a no-op.
+    if let Err(e) = notes.exec(SCHEMA, []) { return db_error(e); }
+    let m = match web::dispatch(routes(), r) {
+        Some(m) => m,
+        None => return web::not_found(),
+    };
+    let id = web::param(m, "id");
+    match m.action {
+        Act::Create => create(r, notes),
+        Act::List => list(r, notes),
+        Act::Show => show(notes, id),
+        Act::Replace => replace(r, notes, id),
+        Act::Delete => delete(notes, id),
+    }
+}
+
+// Values reach SQL only as `?` parameters, so a title holding a quote is just a title.
+fn param(s: Str) -> SqlValue { SqlValue::Text(s) }
+
+fn db_error(e: DbErr) -> web::Response {
+    match e {
+        DbErr::Busy => api::error(503, "database busy"),
+        _ => api::error(500, "storage error"),
+    }
+}
+
+fn note(id: Int, title: Str, body: Str) -> Json {
+    let mut o: Map<Str, Json> = Map::new();
+    o.insert("id", Json::Num(id));
+    o.insert("title", Json::Str(title));
+    o.insert("body", Json::Str(body));
+    Json::Obj(o)
+}
+
+fn text(v: SqlValue) -> Option<Str> {
+    match v { SqlValue::Text(s) => Some(s), _ => None }
+}
+
+// A row `id, title, body` as a note.
+fn row_note(row: List<SqlValue>) -> Option<Json> {
+    let id = match row[0] { SqlValue::Int(n) => n, _ => return None };
+    Some(note(id, text(row[1])?, text(row[2])?))
+}
+
+// A query that returns the note it touched: the note, 404 if no row came back.
+fn one(r: Result<List<List<SqlValue>>, DbErr>, id: Str, status: Int) -> web::Response {
+    match r {
+        Ok(rows) => match api::first(rows).and_then(row_note) {
+            Some(j) => api::json(status, j),
+            None => api::error(404, "no note " + id),
+        },
+        Err(e) => db_error(e),
+    }
+}
+
+// POST /notes: validate the body, then insert; the row that comes back carries the new id.
+fn create(r: web::Request, notes: Db) -> web::Response {
+    let f = match api::str_fields(r, ["title", "body"]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    let sql = "INSERT INTO notes (title, body) VALUES (?, ?) RETURNING id, title, body";
+    one(notes.query(sql, [param(f[0]), param(f[1])]), "", 201)
+}
+
+fn show(notes: Db, id: Str) -> web::Response {
+    let n = match api::int_param(id, "note id") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    one(notes.query("SELECT id, title, body FROM notes WHERE id = ?", [SqlValue::Int(n)]), id, 200)
+}
+
+// GET /notes: notes in id order; ?offset= and ?limit= (default 50, at most 500) pick a page.
+fn list(r: web::Request, notes: Db) -> web::Response {
+    let p = match api::page::<Int>([], r) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let sql = "SELECT id, title, body FROM notes ORDER BY id LIMIT ? OFFSET ?";
+    match notes.query(sql, [SqlValue::Int(p.limit), SqlValue::Int(p.offset)]) {
+        Ok(rows) => api::json(200, Json::Arr(api::flatten(rows.map(row_note)))),
+        Err(e) => db_error(e),
+    }
+}
+
+// PUT /notes/:id: replace an existing note in one statement; no row back means no such note.
+fn replace(r: web::Request, notes: Db, id: Str) -> web::Response {
+    let n = match api::int_param(id, "note id") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let f = match api::str_fields(r, ["title", "body"]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    let sql = "UPDATE notes SET title = ?, body = ? WHERE id = ? RETURNING id, title, body";
+    one(notes.query(sql, [param(f[0]), param(f[1]), SqlValue::Int(n)]), id, 200)
+}
+
+// DELETE /notes/:id
+fn delete(notes: Db, id: Str) -> web::Response {
+    let n = match api::int_param(id, "note id") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    match notes.query("DELETE FROM notes WHERE id = ? RETURNING id", [SqlValue::Int(n)]) {
+        Ok(rows) => if rows.len() == 0 { api::error(404, "no note " + id) } else { web::respond(204, "text/plain", "".to_bytes()) },
+        Err(e) => db_error(e),
+    }
+}

@@ -24,6 +24,7 @@ out=$("$KIO" run tests/http_test.kio --http api=http://127.0.0.1:$port --http-me
 "$KIO" check examples/hello/app.kio
 KIO="$KIO" examples/notes/test.sh
 KIO="$KIO" examples/kvnotes/test.sh
+KIO="$KIO" examples/sqlnotes/test.sh
 KIO="$KIO" examples/ws/test.sh
 KIO="$KIO" examples/links/test.sh
 echo ok
