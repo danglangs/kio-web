@@ -141,6 +141,36 @@ fn main(msg: WsMessage, conn: WsSend, auth: Kv, counts: Kv) -> Result<(), WsErr>
 
 The upgrade is answered before `main` runs, so a refused client is closed (here 4401) on its `open` event; its later messages are refused the same way. [examples/ws](examples/ws) is the full app: `/echo` and a per-connection `/count`, for clients whose token matches one stored in a `Kv` by a separate program.
 
+## HTTP client
+
+Copy [http.kio](http.kio) and declare `mod http;` to call an API from a program or a handler; it needs no web.kio. The operator grants the host with `--http api=api.example` (GET only) and the other methods with `--http-methods api=POST,PUT,DELETE`; the program can reach nothing else, and kio's audit log records each call's method, path, status and header names, never a header value.
+
+| Function | Does |
+|---|---|
+| `json_request(api, method, path, body)` | send `body` as JSON (`Json::Null` sends none) and parse the response: `Ok(Json)` for a 2xx (an empty body is `Json::Null`), or `Err(Str)` naming the status with the start of the body, the failure (`"denied: .."`, `"timeout"`) or the parse error |
+| `json_req(method, path, body, timeout_ms)`, `json_response(r)` | the same for `api.send_all`: build each request, read each result |
+| `header(r, name)` | a response header's value, the name in any case |
+| `describe(e)` | an `HttpErr` as text |
+
+```rust
+mod http;
+
+fn main(api: Http) -> Result<Str, Str> {
+    let mut note: Map<Str, Json> = Map::new();
+    note.insert("title", Json::Str("from kio"));
+    let made = http::json_request(api, "POST", "/notes", Json::Obj(note))?;
+    let id = made.get("id").and_then(|j| j.as_int()).ok_or("no id in the response")?;
+    // Two reads at once; the results come back in list order.
+    let both = api.send_all([http::json_req("GET", "/notes/" + id.to_str(), Json::Null, 2000), http::json_req("GET", "/notes", Json::Null, 2000)]);
+    let one = http::json_response(both[0])?;
+    Ok(one.get("title").and_then(|j| j.as_str()).unwrap_or(""))
+}
+```
+
+```
+$ kio run fetch.kio --http api=http://127.0.0.1:8080 --http-methods api=POST
+```
+
 ## Test
 
 ```

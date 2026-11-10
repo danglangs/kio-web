@@ -1,0 +1,71 @@
+// An HTTP client over the `Http` capability: JSON in, JSON out. The app declares `mod http;`.
+// The grant is `--http api=host` for GET and `--http-methods api=POST,PUT,DELETE` for the rest.
+
+// Send `body` as JSON (nothing for `Json::Null`) with `method` to `path` on `api`, and parse the
+// response as JSON. An error is the failure (`"denied: .."`, `"timeout"`, ..), a non-2xx status
+// with the start of its body (`"status 404: {\"error\":\"no such thing\"}"`) or the parse error.
+pub fn json_request(api: Http, method: Str, path: Str, body: Json) -> Result<Json, Str> {
+    let mut headers = ["accept: application/json"];
+    let mut payload = "".to_bytes();
+    match body {
+        Json::Null => {}
+        _ => {
+            headers.push("content-type: application/json");
+            payload = body.to_json().to_bytes();
+        }
+    }
+    json_response(api.send(method, path, headers, payload))
+}
+
+// One request of a `send_all`, as `json_request` builds it; `timeout_ms` 0 is the grant's timeout.
+pub fn json_req(method: Str, path: Str, body: Json, timeout_ms: Int) -> HttpRequest {
+    let mut headers = ["accept: application/json"];
+    let mut payload = "".to_bytes();
+    match body {
+        Json::Null => {}
+        _ => {
+            headers.push("content-type: application/json");
+            payload = body.to_json().to_bytes();
+        }
+    }
+    HttpRequest { method: method, path: path, headers: headers, body: payload, timeout_ms: timeout_ms }
+}
+
+// A `send` or `send_all` result as JSON: `Ok(Json)` for a 2xx (an empty body is `Json::Null`),
+// else an error as `json_request`'s.
+pub fn json_response(r: Result<HttpResponse, HttpErr>) -> Result<Json, Str> {
+    let res = match r {
+        Ok(res) => res,
+        Err(e) => return Err(describe(e)),
+    };
+    if res.status < 200 || res.status >= 300 {
+        return Err("status " + res.status.to_str() + ": " + excerpt(res.body));
+    }
+    if res.body.len() == 0 { return Ok(Json::Null); }
+    res.body.to_str().parse_json()
+}
+
+// The value of response header `name` (any case), if present.
+pub fn header(r: HttpResponse, name: Str) -> Option<Str> {
+    let want = name.to_lowercase() + ": ";
+    for h in r.headers {
+        if let Some(v) = h.strip_prefix(want) { return Some(v); }
+    }
+    None
+}
+
+// An `HttpErr` as text.
+pub fn describe(e: HttpErr) -> Str {
+    match e {
+        HttpErr::Denied => "denied: the host, method or path is not granted",
+        HttpErr::Timeout => "timeout",
+        HttpErr::TooLarge => "too large: the request body is over 8 MB or the response over 10 MB",
+        HttpErr::Invalid => "invalid: a bad method or header",
+        HttpErr::Status(n) => "status " + n.to_str(),
+    }
+}
+
+// The first 200 bytes of `b` as text.
+fn excerpt(b: Bytes) -> Str {
+    if b.len() > 200 { b.slice(0, 200).to_str() + ".." } else { b.to_str() }
+}

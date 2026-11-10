@@ -1,0 +1,69 @@
+// Tests for http.kio against tests/http_server.py (test.sh starts it): `kio run
+// tests/http_test.kio --http api=http://127.0.0.1:PORT --http-methods api=POST,PUT,DELETE`
+// prints 0 when every check passes, or the number of the first failing check.
+mod http;
+
+fn main(api: Http) -> Int {
+    match http::json_request(api, "GET", "/json", Json::Null) {
+        Ok(j) => { if !j.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) { return 1; } }
+        Err(_) => { return 2; }
+    }
+    // A POST sends the JSON body with its content type; the server echoes both.
+    let mut o: Map<Str, Json> = Map::new();
+    o.insert("name", Json::Str("kio"));
+    match http::json_request(api, "POST", "/echo", Json::Obj(o)) {
+        Ok(j) => {
+            if j.get("method").and_then(|m| m.as_str()).unwrap_or("") != "POST" { return 3; }
+            if j.get("content_type").and_then(|m| m.as_str()).unwrap_or("") != "application/json" { return 4; }
+            if j.get("body").and_then(|b| b.get("name")).and_then(|n| n.as_str()).unwrap_or("") != "kio" { return 5; }
+        }
+        Err(_) => { return 6; }
+    }
+    // A non-2xx names the status and carries the body.
+    match http::json_request(api, "GET", "/missing", Json::Null) {
+        Ok(_) => { return 7; }
+        Err(e) => { if !e.starts_with("status 404: {\"error\"") { return 8; } }
+    }
+    // A method the grant lacks.
+    match http::json_request(api, "PATCH", "/echo", Json::Null) {
+        Ok(_) => { return 9; }
+        Err(e) => { if !e.starts_with("denied") { return 10; } }
+    }
+    // A body that is not JSON: the parse error.
+    match http::json_request(api, "GET", "/text", Json::Null) {
+        Ok(_) => { return 11; }
+        Err(e) => { if !e.contains("at byte") { return 12; } }
+    }
+    // An empty 2xx body is Null.
+    match http::json_request(api, "DELETE", "/echo", Json::Null) {
+        Ok(j) => { match j { Json::Null => {} _ => { return 13; } } }
+        Err(_) => { return 14; }
+    }
+    match api.send("GET", "/json", [], "".to_bytes()) {
+        Ok(r) => {
+            if http::header(r, "Content-Type").unwrap_or("") != "application/json" { return 15; }
+            if http::header(r, "x-nope").is_some() { return 16; }
+        }
+        Err(_) => { return 17; }
+    }
+    // send_all: results in list order, each read as a json_request's.
+    let rs = api.send_all([
+        http::json_req("GET", "/json", Json::Null, 0),
+        http::json_req("GET", "/missing", Json::Null, 0),
+        http::json_req("PUT", "/echo", Json::Num(7), 1000),
+    ]);
+    if rs.len() != 3 { return 18; }
+    match http::json_response(rs[0]) {
+        Ok(j) => { if !j.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) { return 19; } }
+        Err(_) => { return 20; }
+    }
+    match http::json_response(rs[1]) {
+        Ok(_) => { return 21; }
+        Err(e) => { if !e.starts_with("status 404") { return 22; } }
+    }
+    match http::json_response(rs[2]) {
+        Ok(j) => { if j.get("body").and_then(|b| b.as_int()).unwrap_or(0) != 7 { return 23; } }
+        Err(_) => { return 24; }
+    }
+    0
+}
