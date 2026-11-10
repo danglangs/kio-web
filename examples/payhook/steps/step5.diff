@@ -1,0 +1,3 @@
++ main: db query
++ retry_pending: db exec query, slack send_all, log write
+authority added: 2 lines (exit 3)

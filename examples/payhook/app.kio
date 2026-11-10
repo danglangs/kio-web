@@ -1,4 +1,5 @@
-// payhook step 4: receive webhooks, verify Stripe-Signature, store each event once, tell the chat.
+// payhook step 5: receive webhooks, verify Stripe-Signature, store each event once, tell the chat,
+// and retry what the chat refused.
 //   POST /stripe  a signed JSON event {"id", "type", ..}: 200 {"received":true}; a replayed id is
 //                 200 {"duplicate":true}; 400 for a bad or stale signature (`t=<s>,v1=<hex hmac-sha256
 //                 of "<t>.<body>">`, any v1 may match, skew over 300 s either way) or a body that is
@@ -8,13 +9,21 @@
 // payment_intent.succeeded or charge.refunded keeps its chat message in `text`, status `pending`,
 // until the chat accepts it (2xx: `sent`); any other type is `stored`. The message is POSTed as
 // {"text": ..} to /hook on `slack` after the answer to Stripe is sent, so a slow or failing chat
-// never costs Stripe a retry; the host adds the chat's Authorization (`--http-header`). A failed
-// post leaves the event `pending` with its attempt counted. Each accepted event is logged as
-// `<id> <type> <outcome>`: stored, duplicate, notified or pending.
+// never costs Stripe a retry; the host adds the chat's Authorization (`--http-header`).
+// A failed post (5xx or any non-2xx, a timeout after 2 s, a refused connection) leaves the event
+// `pending` with its attempt counted. After answering ANY request (health included), the app retries
+// up to 5 pending events, oldest first; the third failed attempt marks an event `failed`, for good.
+// An attempt is claimed with a conditional UPDATE of `attempts` before it is made, so concurrent
+// requests never send one message twice and never pass 3 attempts, even if a run dies mid-attempt.
+// Each accepted event is logged as `<id> <type> <outcome>`: stored, duplicate, notified or pending;
+// a retry that succeeds logs `retried`, one that gives up logs `failed`.
 // Grants: `--hmac stripe=env:WHSEC:verify --clock now --db db=payhook.db --log log=payhook.log
 //   --http slack=https://chat.example --http-methods slack=POST --http-header slack=Authorization:env:CHAT_AUTH`.
 mod web;
 mod api;
+
+const MAX_ATTEMPTS: Int = 3;
+const RETRIES_PER_REQUEST: Int = 5;
 
 fn main(req: Incoming, res: Outgoing, stripe: Hmac, now: Clock, db: Db, log: Log, slack: Http) -> Result<(), WebErr> {
     let a = handle(web::request(req), stripe, now, db);
@@ -24,6 +33,8 @@ fn main(req: Incoming, res: Outgoing, stripe: Hmac, now: Clock, db: Db, log: Log
         if outcome == "pending" { outcome = deliver(db, slack, ev.id, ev.text, 0); }
         let _written = log.write(ev.id + " " + ev.kind + " " + outcome);
     }
+    let current = match a.event { Some(ev) => ev.id, None => "" };
+    retry_pending(db, slack, log, current);
     Ok(())
 }
 
@@ -79,8 +90,7 @@ fn receive(r: web::Request, stripe: Hmac, now: Clock, db: Db) -> Answer {
 
 // Tell the chat about event `id`, which has had `attempts` attempts: claim the attempt (a request
 // that lost the claim leaves it to the winner), POST the message, record the result. Returns the
-// outcome: notified, or pending after a failure (a 5xx or other non-2xx status, a timeout after
-// 2 s, a refused connection).
+// outcome: notified; pending after a failure; failed after the third.
 fn deliver(db: Db, slack: Http, id: Str, text: Str, attempts: Int) -> Str {
     let claimed = db.exec("UPDATE events SET attempts = attempts + 1 WHERE id = ? AND status = 'pending' AND attempts = ?",
         [SqlValue::Text(id), SqlValue::Int(attempts)]);
@@ -93,10 +103,41 @@ fn deliver(db: Db, slack: Http, id: Str, text: Str, attempts: Int) -> Str {
         Ok(r) => r.status >= 200 && r.status < 300,
         Err(_) => false,
     };
-    if !ok { return "pending"; }
+    if !ok {
+        if attempts + 1 >= MAX_ATTEMPTS {
+            let _given_up = db.exec("UPDATE events SET status = 'failed' WHERE id = ? AND status = 'pending'", [SqlValue::Text(id)]);
+            return "failed";
+        }
+        return "pending";
+    }
     let marked = db.exec("UPDATE events SET status = 'sent' WHERE id = ?", [SqlValue::Text(id)]);
     if marked.is_err() { return "pending"; }
     "notified"
+}
+
+// Retry the oldest pending events but `skip` (the one this request just stored, already tried).
+// A database error means nothing to retry yet.
+fn retry_pending(db: Db, slack: Http, log: Log, skip: Str) {
+    let found = db.query("SELECT id, kind, text, attempts FROM events WHERE status = 'pending' AND attempts < ? AND id != ? ORDER BY rowid LIMIT ?",
+        [SqlValue::Int(MAX_ATTEMPTS), SqlValue::Text(skip), SqlValue::Int(RETRIES_PER_REQUEST)]);
+    let rows = match found { Ok(r) => r, Err(_) => return };
+    for row in rows {
+        let id = text_of(row[0]);
+        let outcome = deliver(db, slack, id, text_of(row[2]), int_of(row[3]));
+        if outcome == "notified" {
+            let _written = log.write(id + " " + text_of(row[1]) + " retried");
+        } else if outcome == "failed" {
+            let _written = log.write(id + " " + text_of(row[1]) + " failed");
+        }
+    }
+}
+
+fn text_of(v: SqlValue) -> Str {
+    match v { SqlValue::Text(s) => s, _ => "" }
+}
+
+fn int_of(v: SqlValue) -> Int {
+    match v { SqlValue::Int(n) => n, _ => 0 }
 }
 
 // The event's id and type, and for the types that notify the chat, the message to send.

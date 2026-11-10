@@ -1,6 +1,6 @@
 #!/bin/sh
-# payhook step 4: receive, health, signature checks, storage, replays and the chat message. The key is in the environment, the clock is
-# fixed, requests are signed with sign.py (Python hmac). KIO=path/to/kio.
+# payhook step 5: receive, health, signature checks, storage, replays, the chat message and its
+# retries. The key is in the environment, the clock is fixed, requests are signed with sign.py (Python hmac). KIO=path/to/kio.
 set -e
 status=1
 KIO=${KIO:-kio}
@@ -197,25 +197,83 @@ for line in 'OK	{"text":"Payment succeeded: $12.34 USD from cus_x"}' 'OK	{"text"
 done
 [ "$(grep -c . "$events")" = 5 ] || { echo "FAIL extra chat messages"; chat; exit 1; }
 n=$((n + 6))
+# ok_ev ID TYPE CENTS CUSTOMER: a signed new notifying event, answered 200 {"received":true}.
+ev_of() { printf '{"id":"%s","type":"%s","data":{"object":{"amount":%s,"currency":"usd","customer":"%s"}}}' "$1" "$2" "$3" "$4"; }
+new_event() { stripe "$(ev_of "$@")" 200 '{"received":true}'; }
+# posts TEXT-PATTERN: how many chat posts (any result) carry that text.
+posts() { grep -c "$1" "$events" || true; }
+log_has() { grep -c "^req [0-9]*: $1\$" "$store/app.log" || true; }
+
 # A failing chat does not fail Stripe's request: 200, the event stays pending with the attempt counted.
 mode 500
-stripe '{"id":"evt_5xx","type":"payment_intent.succeeded","data":{"object":{"amount":2500,"currency":"usd","customer":"cus_5"}}}' 200 '{"received":true}'
-wait_for 'evt_5xx is pending after one attempt' 'pending|1' state evt_5xx
-grep -qxF 'FAIL500	{"text":"Payment succeeded: $25.00 USD from cus_5"}' "$events" || { echo "FAIL the 500 was not tried"; chat; exit 1; }
+new_event evt_r1 payment_intent.succeeded 2500 cus_1
+wait_for 'evt_r1: one failed attempt' 'pending|1' state evt_r1
+wait_for 'evt_r1 post' 1 posts 'FAIL500.*\$25.00 USD from cus_1'
+wait_for 'log: evt_r1 pending' 1 log_has 'evt_r1 payment_intent.succeeded pending'
+# The next request, any request, retries it: a health check here (attempt 2, fails again).
+check GET /health "" 200 ok
+wait_for 'evt_r1: two failed attempts' 'pending|2' state evt_r1
+# The next request retries it a third time and, it failing, marks it failed for good. The new event
+# gets its own first attempt in the same request.
+new_event evt_r2 charge.refunded 700 cus_2
+wait_for 'evt_r1: failed after 3 attempts' 'failed|3' state evt_r1
+wait_for 'evt_r2: one failed attempt' 'pending|1' state evt_r2
+wait_for 'log: evt_r1 failed' 1 log_has 'evt_r1 payment_intent.succeeded failed'
+[ "$(posts 'FAIL500.*\$25.00 USD from cus_1')" = 3 ] || { echo "FAIL evt_r1 was not tried exactly 3 times"; chat; exit 1; }
+# Even a 404 retries: evt_r2's second and third attempts.
+check GET /nope "" 404 'not found'
+wait_for 'evt_r2: two failed attempts' 'pending|2' state evt_r2
+check GET /nope "" 404 'not found'
+wait_for 'evt_r2: failed after 3 attempts' 'failed|3' state evt_r2
+[ "$(posts 'FAIL500.*\$7.00 USD to cus_2')" = 3 ] || { echo "FAIL evt_r2 was not tried exactly 3 times"; chat; exit 1; }
+# A failed event is final: replays answer duplicate, nothing is sent again, even with the chat back.
+mode ok
+before=$(grep -c . "$events")
+stripe "$(ev_of evt_r1 payment_intent.succeeded 2500 cus_1)" 200 '{"duplicate":true}'
+check GET /health "" 200 ok
+sleep 1
+[ "$(grep -c . "$events")" = "$before" ] || { echo "FAIL a failed event was sent again"; chat; exit 1; }
+[ "$(state evt_r1)" = 'failed|3' ] && [ "$(state evt_r2)" = 'failed|3' ] || { echo "FAIL failed events changed"; exit 1; }
+n=$((n + 6))
+# Recovery: the chat is back before the third attempt. Attempt 2 succeeds, on the next request.
+mode 500
+new_event evt_r3 payment_intent.succeeded 1999 cus_3
+wait_for 'evt_r3: one failed attempt' 'pending|1' state evt_r3
+mode ok
+check GET /health "" 200 ok
+wait_for 'evt_r3: sent on attempt 2' 'sent|2' state evt_r3
+wait_for 'log: evt_r3 retried' 1 log_has 'evt_r3 payment_intent.succeeded retried'
+check GET /health "" 200 ok
+sleep 1
+[ "$(posts 'OK.*\$19.99 USD from cus_3')" = 1 ] || { echo "FAIL evt_r3 not sent exactly once"; chat; exit 1; }
+# A replay (a duplicate) is a request too: it retries pending events.
+mode 500
+new_event evt_r4 charge.refunded 5 cus_4
+wait_for 'evt_r4: one failed attempt' 'pending|1' state evt_r4
+mode ok
+stripe "$(ev_of evt_r3 payment_intent.succeeded 1999 cus_3)" 200 '{"duplicate":true}'
+wait_for 'evt_r4: sent by the replay request' 'sent|2' state evt_r4
 n=$((n + 1))
-# A hanging chat: the app gives up after 2 s and still answered 200 at once.
+# A hanging chat: the answer is not delayed, the app gives up after 2 s, the event stays pending.
 mode hang
 t0=$(date +%s)
-stripe '{"id":"evt_slow","type":"charge.refunded","data":{"object":{"amount":700,"currency":"usd","customer":"cus_6"}}}' 200 '{"received":true}'
+new_event evt_r5 payment_intent.succeeded 100 cus_5
 [ $(($(date +%s) - t0)) -le 1 ] || { echo "FAIL the answer waited for the chat"; exit 1; }
-wait_for 'evt_slow is pending after one attempt' 'pending|1' state evt_slow
-n=$((n + 1))
+wait_for 'evt_r5: one timed-out attempt' 'pending|1' state evt_r5
 mode ok
-sleep 2
-# The log has the outcomes.
-for line in 'evt_5xx payment_intent.succeeded pending' 'evt_slow charge.refunded pending'; do
-    wait_for "log has $line" 1 sh -c "grep -c '^req [0-9]*: $line\$' '$store/app.log'"
-done
+check GET /health "" 200 ok
+wait_for 'evt_r5: sent on attempt 2' 'sent|2' state evt_r5
+n=$((n + 1))
+# Pending events survive a restart and are retried by its first request (the start probe).
+mode 500
+new_event evt_r6 charge.refunded 1234 cus_6
+wait_for 'evt_r6: one failed attempt' 'pending|1' state evt_r6
+mode ok
+stop
+start
+wait_for 'evt_r6: sent after the restart' 'sent|2' state evt_r6
+# Every post carried the Authorization the host injected (the stand-in answers 401 without it).
+
 # Without a Authorization the stand-in would have written UNAUTH: the host injected it every time.
 ! grep -q UNAUTH "$events" || { echo "FAIL a chat post lacked the injected Authorization"; chat; exit 1; }
 ! grep -q BADPATH "$events" || { echo "FAIL a chat post went to another path"; chat; exit 1; }
@@ -232,5 +290,5 @@ done
 grep -q '"method":"verify"' "$store/audit.log" || { echo "FAIL audit lacks verify"; exit 1; }
 grep -q '"cap":"db"' "$store/audit.log" || { echo "FAIL audit lacks db"; exit 1; }
 n=$((n + 3))
-echo "payhook step 4 ok ($n checks)"
+echo "payhook step 5 ok ($n checks)"
 status=0
