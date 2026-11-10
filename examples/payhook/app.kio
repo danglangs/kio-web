@@ -1,0 +1,38 @@
+// payhook step 1: receive webhooks and answer health checks.
+//   POST /stripe  a JSON event {"id", "type", ..}: 200 {"received":true}, 400 for anything else
+//   GET  /health  200 ok
+mod web;
+mod api;
+
+fn main(req: Incoming, res: Outgoing) -> Result<(), WebErr> {
+    web::send(res, handle(web::request(req)))
+}
+
+enum Act { Health, Stripe }
+
+fn routes() -> List<web::Route<Act>> {
+    [web::get("/health", Act::Health), web::post("/stripe", Act::Stripe)]
+}
+
+fn handle(r: web::Request) -> web::Response {
+    match web::dispatch(routes(), r) {
+        Some(m) => match m.action {
+            Act::Health => web::text(200, "ok"),
+            Act::Stripe => receive(r),
+        },
+        None => web::not_found(),
+    }
+}
+
+fn received() -> web::Response {
+    let mut o: Map<Str, Json> = Map::new();
+    o.insert("received", Json::Bool(true));
+    api::json(200, Json::Obj(o))
+}
+
+fn receive(r: web::Request) -> web::Response {
+    let j = match api::body(r) { Ok(j) => j, Err(e) => return e };
+    if api::str_field(j, "id").is_none() { return api::error(400, "missing string field \"id\""); }
+    if api::str_field(j, "type").is_none() { return api::error(400, "missing string field \"type\""); }
+    received()
+}
