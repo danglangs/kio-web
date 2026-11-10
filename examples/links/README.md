@@ -15,7 +15,7 @@ For a reproducible run (tests, a replay) fix the two sources (never in productio
 |---|---|
 | `GET /` | HTML page: the top 20 links by hits |
 | `GET /static/<file>` | a file from `assets` |
-| `GET /<slug>` | 302 to the link's URL; counts the hit (`add` on `hits/<slug>`, atomic, so concurrent hits are all counted); 410 once a link's `ttl_s` has passed |
+| `GET /<slug>` | 302 to the link's URL, then counts the hit after the redirect is sent (`add` on `hits/<slug>`, atomic, so concurrent hits are all counted; the client does not wait for it); 410 once a link's `ttl_s` has passed |
 | `GET /api/links` | links by hits, most first; `?offset=`, `?limit=` (default 50, at most 500); 400 on a bad value |
 | `POST /api/links` | `{"url": .., "slug": optional, "ttl_s": optional}`: 201, 400 (bad JSON, URL, slug or ttl), 409 (slug taken); token needed |
 | `DELETE /api/links/<slug>` | 204 or 404; token needed |
@@ -47,9 +47,9 @@ authorized        : auth get
 claim             : links delete swap
 create            : links delete swap, rng int, clock now_ms, log write
 delete            : links delete get, log write
-follow            : links add get, clock now_ms
+follow            : links get, clock now_ms
 generated         : links delete swap, rng int, log write
-handle            : links add delete get scan swap, auth get, assets read, rng int, clock now_ms, log write
+handle            : links delete get scan swap, auth get, assets read, rng int, clock now_ms, log write
 home              : links scan
 list              : links scan
 main              : req body header_names header_values method target, res send, links add delete get scan swap, auth get, assets read, links_rng int, now now_ms, log write

@@ -55,6 +55,16 @@ redirect() {
     [ "$got" = "302 $2" ] || { echo "FAIL GET $1: want 302 $2, got $got"; exit 1; }
     n=$((n + 1))
 }
+# settled PATH EXPECTED-BODY-SUBSTRING: a GET answers 200 containing it within 5 s. A hit is
+# counted after its redirect is sent, so the count can land just after the client has the 302.
+settled() {
+    for i in $(seq 50); do
+        out=$(curl -s -w ' %{http_code}' $base$1)
+        case "$out" in *"$2"*" 200") n=$((n + 1)); return ;; esac
+        sleep 0.1
+    done
+    echo "FAIL GET $1: want 200 containing $2, got $out"; exit 1
+}
 
 start
 check GET / "" 200 'No links yet.'
@@ -112,7 +122,7 @@ redirect /docs 'https://b.example/?q=1&r=2'
 redirect /docs 'https://b.example/?q=1&r=2'
 check GET /nope "" 404 'not found'
 check GET /a.b "" 404 'not found'
-check GET /api/links "" 200 '"hits":2,"short":"/docs"'
+settled /api/links '"hits":2,"short":"/docs"'
 # Concurrent hits: 20 at once give exactly 20 more.
 pids=
 for i in $(seq 20); do
@@ -120,17 +130,18 @@ for i in $(seq 20); do
     pids="$pids $!"
 done
 wait $pids
-check GET /api/links "" 200 '"hits":22,"short":"/docs"'
+settled /api/links '"hits":22,"short":"/docs"'
 # Sorting and paging.
 redirect "/$second" 'http://d.example/'
 check GET '/api/links?limit=1' "" 200 "{\"items\":[{\"created_ms\":$clock,\"hits\":22,\"short\":\"/docs\""
-check GET '/api/links?offset=1&limit=1' "" 200 "{\"items\":[{\"created_ms\":$clock,\"hits\":1,\"short\":\"/$second\""
+settled '/api/links?offset=1&limit=1' "{\"items\":[{\"created_ms\":$clock,\"hits\":1,\"short\":\"/$second\""
 check GET '/api/links?offset=1&limit=1' "" 200 '"total":4'
 check GET '/api/links?offset=9' "" 200 '"items":[]'
 check GET '/api/links?limit=x' "" 400 'limit must be an integer'
 check GET '/api/links?limit=501' "" 400 'limit must be 0 to 500'
 # A link with a ttl redirects while the clock is before it.
 redirect /temp 'https://t.example/'
+settled /api/links '"hits":1,"short":"/temp"'
 # HTML: escaped, top links in order, the stylesheet from the granted Dir.
 check POST /api/links '{"url":"https://e.example/?a=<script>&b=\"x\"","slug":"xss"}' 201 '"slug":"xss"' "$auth"
 check GET / "" 200 'https://e.example/?a=&lt;script&gt;&amp;b=&quot;x&quot;'
@@ -161,7 +172,7 @@ check GET /xss "" 404 'not found'
 # A re-created slug starts at 0 hits (a follow racing a delete can leave a count behind).
 check POST /api/links '{"url":"https://g.example/","slug":"again"}' 201 '"slug":"again"' "$auth"
 redirect /again 'https://g.example/'
-check GET /api/links "" 200 '"hits":1,"short":"/again"'
+settled /api/links '"hits":1,"short":"/again"'
 check DELETE /api/links/again "" 204 '' "$auth"
 check POST /api/links '{"url":"https://g.example/","slug":"again"}' 201 '"hits":0' "$auth"
 check GET /api/links "" 200 '"hits":0,"short":"/again"'
@@ -174,7 +185,7 @@ start
 check GET /api/links "" 200 '"hits":22,"short":"/docs"'
 check GET /api/links "" 200 '"total":4'
 redirect /docs 'https://b.example/?q=1&r=2'
-check GET /api/links "" 200 '"hits":23,"short":"/docs"'
+settled /api/links '"hits":23,"short":"/docs"'
 check GET /temp "" 410 'has expired'
 check GET /api/links "" 200 '"hits":1,"short":"/temp"'
 created '{"url":"https://f.example/"}'

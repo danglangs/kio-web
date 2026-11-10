@@ -15,8 +15,18 @@ mod web;
 mod api;
 
 fn main(req: Incoming, res: Outgoing, links: Kv, auth: Kv, assets: Dir, links_rng: Rng, now: Clock, log: Log) -> Result<(), WebErr> {
-    web::send(res, handle(web::request(req), links, auth, assets, links_rng, now, log))
+    let a = handle(web::request(req), links, auth, assets, links_rng, now, log);
+    web::send(res, a.res)?;
+    // The client has its answer once `send` returns, so it does not wait for the count. A count
+    // the store refuses is lost: the redirect already went out.
+    if let Some(slug) = a.hit { let _n = links.add(hits_key(slug), 1); }
+    Ok(())
 }
+
+// The response, and the link whose hit `main` counts after sending it.
+struct Answer { res: web::Response, hit: Option<Str> }
+
+fn answer(res: web::Response) -> Answer { Answer { res: res, hit: None } }
 
 enum Act { Home, Follow, List, Create, Delete, Static }
 
@@ -26,26 +36,33 @@ fn routes() -> List<web::Route<Act>> {
      web::protected(web::delete("/api/links/:slug", Act::Delete)), web::get("/:slug", Act::Follow)]
 }
 
-fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir, rng: Rng, clock: Clock, log: Log) -> web::Response {
+fn handle(r: web::Request, links: Kv, auth: Kv, assets: Dir, rng: Rng, clock: Clock, log: Log) -> Answer {
     let m = match web::dispatch_as(routes(), r, authorized(r, auth)) {
         Ok(Some(m)) => m,
-        Ok(None) => return web::not_found(),
-        Err(res) => return res,
+        Ok(None) => return answer(web::not_found()),
+        Err(res) => return answer(res),
     };
     let slug = web::param(m, "slug");
+    // A GET that redirects counts a hit; HEAD (link previews, crawlers) does not.
+    let mut counts = false;
     let out = match m.action {
         Act::Home => home(links),
-        Act::Static => return web::file(assets, web::param(m, "path")),
-        Act::Follow => follow(links, slug, r.method != "HEAD", clock),
+        Act::Static => return answer(web::file(assets, web::param(m, "path"))),
+        Act::Follow => {
+            counts = r.method != "HEAD";
+            follow(links, slug, clock)
+        }
         Act::List => list(r, links),
         Act::Create => create(r, links, rng, clock, log),
         Act::Delete => delete(links, slug, log),
     };
     // Handlers return Err(response) early, through `?`; either way it is the answer.
-    match out {
+    let res = match out {
         Ok(res) => res,
         Err(res) => res,
-    }
+    };
+    let hit: Option<Str> = if counts && res.status == 302 { Some(slug) } else { None };
+    Answer { res: res, hit: hit }
 }
 
 // ---- auth
@@ -149,17 +166,16 @@ fn all_links(links: Kv) -> Result<List<Link>, web::Response> {
 
 // ---- handlers
 
-// GET /<slug>: one `get` for the record and one `add` for the hit, which the store counts atomically,
-// so concurrent hits are all counted. HEAD (link previews, crawlers) redirects without counting.
-// A link with a ttl asks the clock, and answers 410 once it has passed.
-fn follow(links: Kv, slug: Str, count: Bool, clock: Clock) -> Result<web::Response, web::Response> {
+// GET /<slug>: one `get` for the record, then the redirect; `main` counts the hit after sending it,
+// with one `add`, which the store counts atomically, so concurrent hits are all counted. A link
+// with a ttl asks the clock, and answers 410 once it has passed.
+fn follow(links: Kv, slug: Str, clock: Clock) -> Result<web::Response, web::Response> {
     if !valid_slug(slug) { return Ok(web::not_found()); }
     let rec = match record_of(links, slug)? {
         Some(r) => r,
         None => return Ok(web::not_found()),
     };
     if rec.ttl_s.is_some() && expired(rec, clock.now_ms()) { return Ok(api::error(410, "link " + slug + " has expired")); }
-    if count { links.add(hits_key(slug), 1).map_err(storage_error)?; }
     Ok(web::redirect(302, rec.url))
 }
 
