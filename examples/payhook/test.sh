@@ -1,5 +1,5 @@
 #!/bin/sh
-# payhook step 3: receive, health, signature checks, storage and replays. The key is in the environment, the clock is
+# payhook step 4: receive, health, signature checks, storage, replays and the chat message. The key is in the environment, the clock is
 # fixed, requests are signed with sign.py (Python hmac). KIO=path/to/kio.
 set -e
 status=1
@@ -8,7 +8,8 @@ cd "$(dirname "$0")"
 cp ../../web.kio ../../api.kio .
 store=$(mktemp -d)
 pid=
-trap 'for p in $pid; do kill $p 2>/dev/null; wait $p 2>/dev/null || true; done; rm -rf "$store" web.kio api.kio; exit $status' EXIT
+hook=
+trap 'for p in $pid $hook; do kill $p 2>/dev/null; wait $p 2>/dev/null || true; done; rm -rf "$store" web.kio api.kio; exit $status' EXIT
 "$KIO" check app.kio >/dev/null || { echo "app.kio does not check"; "$KIO" check app.kio; exit 1; }
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 port=$(free_port)
@@ -16,10 +17,26 @@ base=http://127.0.0.1:$port
 key=whsec_test_$$_0123456789abcdef
 export PAYHOOK_WHSEC=$key
 now_s=1794225600  # 2026-11-09T12:00:00Z, the fixed clock
+# The chat stand-in: hook.py checks the Authorization the host injects and can be told to fail.
+hook_port=$(free_port)
+hook_url=http://127.0.0.1:$hook_port
+events=$store/chat
+: >"$events"
+hook_key=chat-key-$$-5e1d9a07c3b2
+printf 'Bearer %s\n' "$hook_key" >"$store/chat_auth"
+python3 hook.py "$hook_port" "$events" "$store/chat_auth" &
+hook=$!
+for i in $(seq 50); do
+    curl -s -o /dev/null -X POST -d ok $hook_url/_mode && break
+    sleep 0.1
+done
+mode() { curl -s -o /dev/null -X POST -d "$1" $hook_url/_mode; }
 
 start() {
     "$KIO" run app.kio --hmac stripe=env:PAYHOOK_WHSEC:verify --clock now=fixed:${now_s}000 \
-        --db db="$store/payhook.db" --log log="$store/app.log" --audit "$store/audit.log" --listen 127.0.0.1:$port >/dev/null 2>>"$store/stderr" &
+        --db db="$store/payhook.db" --log log="$store/app.log" \
+        --http slack=$hook_url --http-methods slack=POST --http-header slack=Authorization:file:"$store/chat_auth" \
+        --timeout 20 --audit "$store/audit.log" --listen 127.0.0.1:$port >/dev/null 2>>"$store/stderr" &
     pid=$!
     for i in $(seq 50); do
         curl -s -o /dev/null $base/health && return
@@ -28,10 +45,24 @@ start() {
     echo "server did not start"; exit 1
 }
 
+row() { rows | sed -n "${1}p"; }
 stop() { kill $pid; wait $pid 2>/dev/null || true; pid=; }
-# rows [WHERE]: the events table as `id|kind|status|attempts|created_ms|text` lines, by arrival.
-rows() { python3 -c 'import sqlite3,sys; [print("|".join(map(str,r))) for r in sqlite3.connect(sys.argv[1]).execute("SELECT id,kind,status,attempts,created_ms,text FROM events ORDER BY rowid")]' "$store/payhook.db"; }
+# rows: the events table as `id|kind|status|attempts|created_ms|text` lines, by arrival.
+rows() { python3 db.py "$store/payhook.db" "SELECT id,kind,status,attempts,created_ms,text FROM events ORDER BY rowid"; }
+# state ID: `status|attempts` of one event.
+state() { python3 db.py "$store/payhook.db" "SELECT status,attempts FROM events WHERE id='$1'"; }
 
+# wait_for WHAT EXPECTED CMD..: CMD's output is EXPECTED within 8 s (the chat is told after the answer).
+wait_for() {
+    what=$1; want=$2; shift 2
+    for i in $(seq 80); do
+        got=$("$@")
+        [ "$got" = "$want" ] && { n=$((n + 1)); return; }
+        sleep 0.1
+    done
+    echo "FAIL $what: want '$want', got '$got'"; exit 1
+}
+chat() { cat "$events"; }
 n=0
 # check METHOD PATH BODY EXPECTED-STATUS EXPECTED-BODY-SUBSTRING [SIGNATURE-HEADER]
 check() {
@@ -91,7 +122,8 @@ stripe '{"id":5,"type":"x"}' 400 'field \"id\"'
 stripe '{"id":"evt_3"}' 400 'field \"type\"'
 # Storage and replays. Everything so far used evt_1, evt_2 and no others.
 [ "$(rows | wc -l | tr -d ' ')" = 2 ] || { echo "FAIL want 2 stored events"; rows; exit 1; }
-[ "$(rows | sed -n 1p)" = "evt_1|payment_intent.succeeded|pending|0|${now_s}000|Payment succeeded: \$12.34 USD from cus_x" ] || { echo "FAIL evt_1 row"; rows; exit 1; }
+wait_for 'evt_1 is sent' "evt_1|payment_intent.succeeded|sent|1|${now_s}000|Payment succeeded: \$12.34 USD from cus_x" row 1
+[ "$(rows | sed -n 1p)" = "evt_1|payment_intent.succeeded|sent|1|${now_s}000|Payment succeeded: \$12.34 USD from cus_x" ] || { echo "FAIL evt_1 row"; rows; exit 1; }
 [ "$(rows | sed -n 2p)" = "evt_2|other.thing|stored|0|${now_s}000|" ] || { echo "FAIL evt_2 row"; rows; exit 1; }
 n=$((n + 3))
 stripe "$ev" 200 '{"duplicate":true}'
@@ -107,6 +139,7 @@ stripe '{"id":"evt_a","type":"payment_intent.succeeded","data":{"object":{"amoun
 stripe '{"id":"evt_b","type":"charge.refunded","data":{"object":{"amount":100,"currency":"usd","customer":"cus_b"}}}' 200 'received'
 stripe '{"id":"evt_c","type":"payment_intent.succeeded","data":{"object":{"amount":0,"currency":"usd","customer":"cus_c"}}}' 200 'received'
 stripe '{"id":"evt_d","type":"charge.refunded","data":{"object":{"amount":99999,"currency":"jpy","customer":"cus_d"}}}' 200 'received'
+wait_for 'evt_d is sent' 'sent|1' state evt_d
 [ "$(rows | sed -n 3p | cut -d'|' -f6)" = 'Payment succeeded: $0.05 EUR from cus_a' ] || { echo "FAIL evt_a text"; rows; exit 1; }
 [ "$(rows | sed -n 4p | cut -d'|' -f6)" = 'Refund: $1.00 USD to cus_b' ] || { echo "FAIL evt_b text"; rows; exit 1; }
 [ "$(rows | sed -n 5p | cut -d'|' -f6)" = 'Payment succeeded: $0.00 USD from cus_c' ] || { echo "FAIL evt_c text"; rows; exit 1; }
@@ -139,9 +172,9 @@ stripe "$ev" 200 '{"duplicate":true}'
 stripe '{"id":"evt_g","type":"other.thing"}' 200 'received'
 # The log: one line per accepted event, in the form `<id> <type> <outcome>` (under --listen `req N: ` first).
 got=$(sed 's/^req [0-9]*: //' "$store/app.log" | head -2)
-[ "$got" = "evt_1 payment_intent.succeeded pending
+[ "$got" = "evt_1 payment_intent.succeeded notified
 evt_2 other.thing stored" ] || { echo "FAIL log start:"; cat "$store/app.log"; exit 1; }
-for line in 'evt_a payment_intent.succeeded pending' 'evt_b charge.refunded pending' 'evt_f customer.created stored' \
+for line in 'evt_a payment_intent.succeeded notified' 'evt_b charge.refunded notified' 'evt_f customer.created stored' \
     'evt_1 charge.refunded duplicate' 'evt_2 other.thing duplicate' 'evt_g other.thing stored'; do
     grep -qx "req [0-9]*: $line" "$store/app.log" || { echo "FAIL log lacks $line"; cat "$store/app.log"; exit 1; }
 done
@@ -153,8 +186,45 @@ evt_g other.thing stored" ] || { echo "FAIL log after restart"; cat "$store/app.
 # Nothing rejected or unknown is logged.
 ! grep -q 'evt_e\|evt_3' "$store/app.log" || { echo "FAIL log has a rejected event"; exit 1; }
 # Rejected requests are not logged: every line is `<id> <type> <outcome>`.
-! grep -qv '^req [0-9]*: evt_[a-z0-9]* [a-z_.]* \(stored\|pending\|duplicate\)$' "$store/app.log" || { echo "FAIL log has other lines"; cat "$store/app.log"; exit 1; }
+! grep -qv '^req [0-9]*: evt_[a-z0-9]* [a-z_.]* \(stored\|notified\|pending\|duplicate\)$' "$store/app.log" || { echo "FAIL log has other lines"; cat "$store/app.log"; exit 1; }
 n=$((n + 7))
+# The chat: one message per new notifying event (evt_1, a, b, c, d), none for replays, none for
+# other types, each with the Authorization the host injects (the stand-in answers 401 without it).
+wait_for 'five chat messages' 5 sh -c "grep -c . '$events'"
+for line in 'OK	{"text":"Payment succeeded: $12.34 USD from cus_x"}' 'OK	{"text":"Payment succeeded: $0.05 EUR from cus_a"}' \
+    'OK	{"text":"Refund: $1.00 USD to cus_b"}' 'OK	{"text":"Payment succeeded: $0.00 USD from cus_c"}' 'OK	{"text":"Refund: $999.99 JPY to cus_d"}'; do
+    grep -qxF "$line" "$events" || { echo "FAIL chat lacks: $line"; chat; exit 1; }
+done
+[ "$(grep -c . "$events")" = 5 ] || { echo "FAIL extra chat messages"; chat; exit 1; }
+n=$((n + 6))
+# A failing chat does not fail Stripe's request: 200, the event stays pending with the attempt counted.
+mode 500
+stripe '{"id":"evt_5xx","type":"payment_intent.succeeded","data":{"object":{"amount":2500,"currency":"usd","customer":"cus_5"}}}' 200 '{"received":true}'
+wait_for 'evt_5xx is pending after one attempt' 'pending|1' state evt_5xx
+grep -qxF 'FAIL500	{"text":"Payment succeeded: $25.00 USD from cus_5"}' "$events" || { echo "FAIL the 500 was not tried"; chat; exit 1; }
+n=$((n + 1))
+# A hanging chat: the app gives up after 2 s and still answered 200 at once.
+mode hang
+t0=$(date +%s)
+stripe '{"id":"evt_slow","type":"charge.refunded","data":{"object":{"amount":700,"currency":"usd","customer":"cus_6"}}}' 200 '{"received":true}'
+[ $(($(date +%s) - t0)) -le 1 ] || { echo "FAIL the answer waited for the chat"; exit 1; }
+wait_for 'evt_slow is pending after one attempt' 'pending|1' state evt_slow
+n=$((n + 1))
+mode ok
+sleep 2
+# The log has the outcomes.
+for line in 'evt_5xx payment_intent.succeeded pending' 'evt_slow charge.refunded pending'; do
+    wait_for "log has $line" 1 sh -c "grep -c '^req [0-9]*: $line\$' '$store/app.log'"
+done
+# Without a Authorization the stand-in would have written UNAUTH: the host injected it every time.
+! grep -q UNAUTH "$events" || { echo "FAIL a chat post lacked the injected Authorization"; chat; exit 1; }
+! grep -q BADPATH "$events" || { echo "FAIL a chat post went to another path"; chat; exit 1; }
+grep -q '"injected":\["authorization"\]' "$store/audit.log" || { echo "FAIL audit lacks injected"; exit 1; }
+n=$((n + 3))
+for f in "$store/audit.log" "$store/app.log" "$store/stderr"; do
+    ! grep -q "$hook_key" "$f" || { echo "FAIL the chat key is in $f"; exit 1; }
+done
+n=$((n + 1))
 # The key never reaches the audit log or stderr; every verify is audited.
 for f in "$store/audit.log" "$store/stderr"; do
     ! grep -q "$key" "$f" || { echo "FAIL the key is in $f"; exit 1; }
@@ -162,5 +232,5 @@ done
 grep -q '"method":"verify"' "$store/audit.log" || { echo "FAIL audit lacks verify"; exit 1; }
 grep -q '"cap":"db"' "$store/audit.log" || { echo "FAIL audit lacks db"; exit 1; }
 n=$((n + 3))
-echo "payhook step 3 ok ($n checks)"
+echo "payhook step 4 ok ($n checks)"
 status=0

@@ -1,28 +1,36 @@
-// payhook step 3: receive webhooks, verify Stripe-Signature, store each event once.
+// payhook step 4: receive webhooks, verify Stripe-Signature, store each event once, tell the chat.
 //   POST /stripe  a signed JSON event {"id", "type", ..}: 200 {"received":true}; a replayed id is
 //                 200 {"duplicate":true}; 400 for a bad or stale signature (`t=<s>,v1=<hex hmac-sha256
 //                 of "<t>.<body>">`, any v1 may match, skew over 300 s either way) or a body that is
 //                 not an event; 500 if the database fails (Stripe then retries)
 //   GET  /health  200 ok
 // Events are rows of `events` in `db` (id is the primary key, so a replay violates it). A
-// payment_intent.succeeded or charge.refunded has the chat message it will need in `text` and
-// status `pending`; any other type is `stored`. Each accepted event is logged as `<id> <type> <outcome>`.
-// Grants: `--hmac stripe=env:WHSEC:verify --clock now --db db=payhook.db --log log=payhook.log`.
-//   GET  /health  200 ok
+// payment_intent.succeeded or charge.refunded keeps its chat message in `text`, status `pending`,
+// until the chat accepts it (2xx: `sent`); any other type is `stored`. The message is POSTed as
+// {"text": ..} to /hook on `slack` after the answer to Stripe is sent, so a slow or failing chat
+// never costs Stripe a retry; the host adds the chat's Authorization (`--http-header`). A failed
+// post leaves the event `pending` with its attempt counted. Each accepted event is logged as
+// `<id> <type> <outcome>`: stored, duplicate, notified or pending.
+// Grants: `--hmac stripe=env:WHSEC:verify --clock now --db db=payhook.db --log log=payhook.log
+//   --http slack=https://chat.example --http-methods slack=POST --http-header slack=Authorization:env:CHAT_AUTH`.
 mod web;
 mod api;
 
-fn main(req: Incoming, res: Outgoing, stripe: Hmac, now: Clock, db: Db, log: Log) -> Result<(), WebErr> {
+fn main(req: Incoming, res: Outgoing, stripe: Hmac, now: Clock, db: Db, log: Log, slack: Http) -> Result<(), WebErr> {
     let a = handle(web::request(req), stripe, now, db);
     web::send(res, a.res)?;
-    if let Some(line) = a.logged { let _written = log.write(line); }
+    if let Some(ev) = a.event {
+        let mut outcome = a.outcome;
+        if outcome == "pending" { outcome = deliver(db, slack, ev.id, ev.text, 0); }
+        let _written = log.write(ev.id + " " + ev.kind + " " + outcome);
+    }
     Ok(())
 }
 
-// The response, and the log line for an accepted event.
-struct Answer { res: web::Response, logged: Option<Str> }
+// The response, and the accepted event with its outcome so far (`pending`: still to tell the chat).
+struct Answer { res: web::Response, event: Option<Ev>, outcome: Str }
 
-fn answer(res: web::Response) -> Answer { Answer { res: res, logged: None } }
+fn answer(res: web::Response) -> Answer { Answer { res: res, event: None, outcome: "" } }
 
 struct Ev { id: Str, kind: Str, text: Str }
 
@@ -62,11 +70,33 @@ fn receive(r: web::Request, stripe: Hmac, now: Clock, db: Db) -> Answer {
     match store(db, ev, now_ms) {
         Ok(true) => {
             let outcome = if ev.text == "" { "stored" } else { "pending" };
-            Answer { res: received("received"), logged: Some(ev.id + " " + ev.kind + " " + outcome) }
+            Answer { res: received("received"), event: Some(ev), outcome: outcome }
         }
-        Ok(false) => Answer { res: received("duplicate"), logged: Some(ev.id + " " + ev.kind + " duplicate") },
+        Ok(false) => Answer { res: received("duplicate"), event: Some(ev), outcome: "duplicate" },
         Err(why) => answer(api::error(500, why)),
     }
+}
+
+// Tell the chat about event `id`, which has had `attempts` attempts: claim the attempt (a request
+// that lost the claim leaves it to the winner), POST the message, record the result. Returns the
+// outcome: notified, or pending after a failure (a 5xx or other non-2xx status, a timeout after
+// 2 s, a refused connection).
+fn deliver(db: Db, slack: Http, id: Str, text: Str, attempts: Int) -> Str {
+    let claimed = db.exec("UPDATE events SET attempts = attempts + 1 WHERE id = ? AND status = 'pending' AND attempts = ?",
+        [SqlValue::Text(id), SqlValue::Int(attempts)]);
+    let Ok(1) = claimed else { return "pending"; };
+    let mut o: Map<Str, Json> = Map::new();
+    o.insert("text", Json::Str(text));
+    let sent = slack.send_all([HttpRequest { method: "POST", path: "/hook", headers: ["content-type: application/json"],
+        body: Json::Obj(o).to_json().to_bytes(), timeout_ms: 2000 }]);
+    let ok = match sent[0] {
+        Ok(r) => r.status >= 200 && r.status < 300,
+        Err(_) => false,
+    };
+    if !ok { return "pending"; }
+    let marked = db.exec("UPDATE events SET status = 'sent' WHERE id = ?", [SqlValue::Text(id)]);
+    if marked.is_err() { return "pending"; }
+    "notified"
 }
 
 // The event's id and type, and for the types that notify the chat, the message to send.
