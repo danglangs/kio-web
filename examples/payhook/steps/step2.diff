@@ -1,0 +1,7 @@
++ main: grant stripe: Hmac
++ main: grant now: Clock
++ check_signature: stripe verify
++ handle: stripe verify, now now_ms
++ main: stripe verify, now now_ms
++ receive: stripe verify, now now_ms
+authority added: 6 lines (exit 3)

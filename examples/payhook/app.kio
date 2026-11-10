@@ -1,11 +1,13 @@
-// payhook step 1: receive webhooks and answer health checks.
-//   POST /stripe  a JSON event {"id", "type", ..}: 200 {"received":true}, 400 for anything else
+// payhook step 2: receive webhooks, verifying Stripe-Signature (`t=<s>,v1=<hex hmac-sha256 of "<t>.<body>">`, any v1 may match).
+//   POST /stripe  a signed JSON event {"id", "type", ..}: 200 {"received":true}; 400 for a bad or stale
+//                 signature (clock skew over 300 s either way) or a body that is not an event
+// The key is the operator's: `--hmac stripe=env:WHSEC:verify`; the clock `--clock now`.
 //   GET  /health  200 ok
 mod web;
 mod api;
 
-fn main(req: Incoming, res: Outgoing) -> Result<(), WebErr> {
-    web::send(res, handle(web::request(req)))
+fn main(req: Incoming, res: Outgoing, stripe: Hmac, now: Clock) -> Result<(), WebErr> {
+    web::send(res, handle(web::request(req), stripe, now))
 }
 
 enum Act { Health, Stripe }
@@ -14,11 +16,11 @@ fn routes() -> List<web::Route<Act>> {
     [web::get("/health", Act::Health), web::post("/stripe", Act::Stripe)]
 }
 
-fn handle(r: web::Request) -> web::Response {
+fn handle(r: web::Request, stripe: Hmac, now: Clock) -> web::Response {
     match web::dispatch(routes(), r) {
         Some(m) => match m.action {
             Act::Health => web::text(200, "ok"),
-            Act::Stripe => receive(r),
+            Act::Stripe => receive(r, stripe, now),
         },
         None => web::not_found(),
     }
@@ -30,9 +32,65 @@ fn received() -> web::Response {
     api::json(200, Json::Obj(o))
 }
 
-fn receive(r: web::Request) -> web::Response {
+fn receive(r: web::Request, stripe: Hmac, now: Clock) -> web::Response {
+    let header = match web::header(r, "stripe-signature") {
+        Some(h) => h,
+        None => return api::error(400, "missing Stripe-Signature header"),
+    };
+    if let Err(why) = check_signature(stripe, header, r.body, now.now_ms() / 1000) {
+        return api::error(400, why);
+    }
     let j = match api::body(r) { Ok(j) => j, Err(e) => return e };
     if api::str_field(j, "id").is_none() { return api::error(400, "missing string field \"id\""); }
     if api::str_field(j, "type").is_none() { return api::error(400, "missing string field \"type\""); }
     received()
+}
+
+// `Stripe-Signature: t=<unix s>,v1=<hex>[,v1=<hex>..]`: some v1 must be the HMAC of "<t>.<body>",
+// and t within 300 s of `now_s`. The signature is checked first, so a stale but forged header and a
+// fresh forged one answer alike.
+fn check_signature(stripe: Hmac, header: Str, body: Bytes, now_s: Int) -> Result<(), Str> {
+    let mut t = "";
+    let mut macs: List<Str> = [];
+    for part in header.split(",") {
+        let p = part.trim();
+        if let Some(v) = p.strip_prefix("t=") { t = v; }
+        if let Some(v) = p.strip_prefix("v1=") { macs.push(v); }
+    }
+    let ts = match t.parse_int() {
+        Some(n) => n,
+        None => return Err("Stripe-Signature has no timestamp t="),
+    };
+    let mut msg = (t + ".").to_bytes();
+    msg.extend(body);
+    let mut ok = false;
+    for m in macs {
+        if stripe.verify(msg, unhex(m)) { ok = true; }
+    }
+    if !ok { return Err("bad signature"); }
+    let skew = now_s - ts;
+    if skew > 300 || skew < 0 - 300 { return Err("timestamp outside the 300 s tolerance"); }
+    Ok(())
+}
+
+// The bytes of hex text; empty for odd length or a non-hex character (which verify rejects).
+fn unhex(s: Str) -> Bytes {
+    let b = s.to_bytes();
+    let mut out = "".to_bytes();
+    if b.len() % 2 != 0 { return out; }
+    let mut i = 0;
+    while i < b.len() {
+        let hi = match nibble(b[i]) { Some(v) => v, None => return "".to_bytes() };
+        let lo = match nibble(b[i + 1]) { Some(v) => v, None => return "".to_bytes() };
+        out.push(hi * 16 + lo);
+        i += 2;
+    }
+    out
+}
+
+fn nibble(c: Int) -> Option<Int> {
+    if c >= 48 && c <= 57 { return Some(c - 48); }
+    if c >= 97 && c <= 102 { return Some(c - 87); }
+    if c >= 65 && c <= 70 { return Some(c - 55); }
+    None
 }
