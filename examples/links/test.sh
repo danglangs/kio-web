@@ -1,7 +1,8 @@
 #!/bin/sh
 # Store a token, serve the links app on a free port and exercise every route with curl, then
 # restart it on the same store and check that links and counts remain; a local receiver collects
-# the webhook events. KIO=path/to/kio.
+# the webhook events, each authorized by a header the host adds (the app never holds the key).
+# KIO=path/to/kio.
 set -e
 status=1
 KIO=${KIO:-kio}
@@ -23,11 +24,13 @@ case "$out" in *'token set'*) ;; *) echo "FAIL set_token: $out"; exit 1 ;; esac
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 port=$(free_port)
 base=http://127.0.0.1:$port
-# The webhook receiver: each POST body becomes a line of $events.
+# The webhook receiver: each POST body with the right Authorization becomes a line of $events.
 hook_port=$(free_port)
 events=$store/events
 : >"$events"
-python3 ../../tests/http_server.py "$hook_port" "$events" &
+hook_key=hook-key-$$-5e1d9a07c3b2
+printf 'Bearer %s\n' "$hook_key" >"$store/hook_auth"
+python3 hook.py "$hook_port" "$events" "$store/hook_auth" &
 hook=$!
 # The clock is fixed and the slugs seeded, so a run is reproducible; the restart below moves the
 # clock past a link's ttl.
@@ -38,7 +41,8 @@ start() {
     "$KIO" run app.kio --kv links="$store/links.kv" --kv auth="$store/auth.kv" --dir assets=./static \
         --rng links_rng=seed:1 --clock now=fixed:$clock --log log="$log" \
         --http hook=http://127.0.0.1:$hook_port --http-methods hook=POST \
-        --listen 127.0.0.1:$port >/dev/null 2>&1 &
+        --http-header hook=Authorization:file:"$store/hook_auth" \
+        --audit "$store/audit.log" --listen 127.0.0.1:$port >/dev/null 2>>"$store/stderr" &
     pid=$!
     for i in $(seq 50); do
         curl -s -o /dev/null $base/ && return
@@ -213,8 +217,13 @@ for i in $(seq 50); do
     sleep 0.1
 done
 [ "$(wc -l <"$events" | tr -d ' ')" = 9 ] || { echo "FAIL want 9 webhook events"; cat "$events"; exit 1; }
+! grep -q unauthorized "$events" || { echo "FAIL a webhook lacked the injected Authorization"; cat "$events"; exit 1; }
+grep -q '"injected":\["authorization"\]' "$store/audit.log" || { echo "FAIL audit lacks injected"; exit 1; }
+for f in "$store/audit.log" "$log" "$store/stderr"; do
+    ! grep -q "$hook_key" "$f" || { echo "FAIL the hook key is in $f"; exit 1; }
+done
 grep -qxF '{"event":"created","slug":"docs","url":"https://b.example/?q=1&r=2"}' "$events" || { echo "FAIL no docs event"; cat "$events"; exit 1; }
 grep -qxF "{\"event\":\"created\",\"slug\":\"$first\",\"url\":\"https://a.example/one\"}" "$events" || { echo "FAIL no first event"; cat "$events"; exit 1; }
-n=$((n + 3))
+n=$((n + 6))
 echo "links ok ($n checks)"
 status=0

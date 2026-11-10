@@ -7,10 +7,10 @@ cp ../../web.kio ../../api.kio ../../http.kio .
 echo a-long-random-team-token > secret/token
 kio run set_token.kio --dir secret=./secret --kv auth=auth.kv
 kio run app.kio --kv links=links.kv --kv auth=auth.kv --dir assets=./static --rng links_rng --clock now --log log=links.log \
-    --http hook=hooks.example --http-methods hook=POST --listen 127.0.0.1:8080
+    --http hook=hooks.example --http-methods hook=POST --http-header hook=Authorization:env:HOOK_AUTH --listen 127.0.0.1:8080
 ```
 
-After the 201 of a create is sent, the app POSTs `{"event":"created","slug":..,"url":..}` to `/` on the `hook` host (the client does not wait for it); a failed post is a `hook failed for <slug>: <why>` line in the log, not retried. kio has no optional grants, so `hook` is required; point it at a local receiver (`--http hook=http://127.0.0.1:9000`) if nothing listens. `test.sh` uses `../../tests/http_server.py PORT EVENTS` as the receiver.
+After the 201 of a create is sent, the app POSTs `{"event":"created","slug":..,"url":..}` to `/` on the `hook` host (the client does not wait for it); a failed post is a `hook failed for <slug>: <why>` line in the log, not retried. The host adds `Authorization` from `HOOK_AUTH` (as `Bearer ...`) to each post: the app never holds the key, so it cannot leak it, and the audit log names the header, never its value. kio has no optional grants, so `hook` is required; point it at a local receiver (`--http hook=http://127.0.0.1:9000`) if nothing listens. `test.sh` uses `hook.py PORT EVENTS KEYFILE` as the receiver, which refuses a post without the key.
 
 For a reproducible run (tests, a replay) fix the two sources (never in production: a seed makes every slug predictable): `--rng links_rng=seed:1 --clock now=fixed:2026-11-09T12:00:00Z`; `--log log=-` writes the log to stderr.
 
