@@ -1,14 +1,30 @@
-// payhook step 2: receive webhooks, verifying Stripe-Signature (`t=<s>,v1=<hex hmac-sha256 of "<t>.<body>">`, any v1 may match).
-//   POST /stripe  a signed JSON event {"id", "type", ..}: 200 {"received":true}; 400 for a bad or stale
-//                 signature (clock skew over 300 s either way) or a body that is not an event
-// The key is the operator's: `--hmac stripe=env:WHSEC:verify`; the clock `--clock now`.
+// payhook step 3: receive webhooks, verify Stripe-Signature, store each event once.
+//   POST /stripe  a signed JSON event {"id", "type", ..}: 200 {"received":true}; a replayed id is
+//                 200 {"duplicate":true}; 400 for a bad or stale signature (`t=<s>,v1=<hex hmac-sha256
+//                 of "<t>.<body>">`, any v1 may match, skew over 300 s either way) or a body that is
+//                 not an event; 500 if the database fails (Stripe then retries)
+//   GET  /health  200 ok
+// Events are rows of `events` in `db` (id is the primary key, so a replay violates it). A
+// payment_intent.succeeded or charge.refunded has the chat message it will need in `text` and
+// status `pending`; any other type is `stored`. Each accepted event is logged as `<id> <type> <outcome>`.
+// Grants: `--hmac stripe=env:WHSEC:verify --clock now --db db=payhook.db --log log=payhook.log`.
 //   GET  /health  200 ok
 mod web;
 mod api;
 
-fn main(req: Incoming, res: Outgoing, stripe: Hmac, now: Clock) -> Result<(), WebErr> {
-    web::send(res, handle(web::request(req), stripe, now))
+fn main(req: Incoming, res: Outgoing, stripe: Hmac, now: Clock, db: Db, log: Log) -> Result<(), WebErr> {
+    let a = handle(web::request(req), stripe, now, db);
+    web::send(res, a.res)?;
+    if let Some(line) = a.logged { let _written = log.write(line); }
+    Ok(())
 }
+
+// The response, and the log line for an accepted event.
+struct Answer { res: web::Response, logged: Option<Str> }
+
+fn answer(res: web::Response) -> Answer { Answer { res: res, logged: None } }
+
+struct Ev { id: Str, kind: Str, text: Str }
 
 enum Act { Health, Stripe }
 
@@ -16,34 +32,97 @@ fn routes() -> List<web::Route<Act>> {
     [web::get("/health", Act::Health), web::post("/stripe", Act::Stripe)]
 }
 
-fn handle(r: web::Request, stripe: Hmac, now: Clock) -> web::Response {
+fn handle(r: web::Request, stripe: Hmac, now: Clock, db: Db) -> Answer {
     match web::dispatch(routes(), r) {
         Some(m) => match m.action {
-            Act::Health => web::text(200, "ok"),
-            Act::Stripe => receive(r, stripe, now),
+            Act::Health => answer(web::text(200, "ok")),
+            Act::Stripe => receive(r, stripe, now, db),
         },
-        None => web::not_found(),
+        None => answer(web::not_found()),
     }
 }
 
-fn received() -> web::Response {
+fn received(key: Str) -> web::Response {
     let mut o: Map<Str, Json> = Map::new();
-    o.insert("received", Json::Bool(true));
+    o.insert(key, Json::Bool(true));
     api::json(200, Json::Obj(o))
 }
 
-fn receive(r: web::Request, stripe: Hmac, now: Clock) -> web::Response {
+fn receive(r: web::Request, stripe: Hmac, now: Clock, db: Db) -> Answer {
+    let now_ms = now.now_ms();
     let header = match web::header(r, "stripe-signature") {
         Some(h) => h,
-        None => return api::error(400, "missing Stripe-Signature header"),
+        None => return answer(api::error(400, "missing Stripe-Signature header")),
     };
-    if let Err(why) = check_signature(stripe, header, r.body, now.now_ms() / 1000) {
-        return api::error(400, why);
+    if let Err(why) = check_signature(stripe, header, r.body, now_ms / 1000) {
+        return answer(api::error(400, why));
     }
-    let j = match api::body(r) { Ok(j) => j, Err(e) => return e };
-    if api::str_field(j, "id").is_none() { return api::error(400, "missing string field \"id\""); }
-    if api::str_field(j, "type").is_none() { return api::error(400, "missing string field \"type\""); }
-    received()
+    let j = match api::body(r) { Ok(j) => j, Err(e) => return answer(e) };
+    let ev = match parse_event(j) { Ok(e) => e, Err(why) => return answer(api::error(400, why)) };
+    match store(db, ev, now_ms) {
+        Ok(true) => {
+            let outcome = if ev.text == "" { "stored" } else { "pending" };
+            Answer { res: received("received"), logged: Some(ev.id + " " + ev.kind + " " + outcome) }
+        }
+        Ok(false) => Answer { res: received("duplicate"), logged: Some(ev.id + " " + ev.kind + " duplicate") },
+        Err(why) => answer(api::error(500, why)),
+    }
+}
+
+// The event's id and type, and for the types that notify the chat, the message to send.
+fn parse_event(j: Json) -> Result<Ev, Str> {
+    let id = match api::str_field(j, "id") { Some(s) => s, None => return Err("missing string field \"id\"") };
+    let kind = match api::str_field(j, "type") { Some(s) => s, None => return Err("missing string field \"type\"") };
+    let text = message(kind, j)?;
+    Ok(Ev { id: id, kind: kind, text: text })
+}
+
+// "" for a type that sends no message.
+fn message(kind: Str, j: Json) -> Result<Str, Str> {
+    let verb = match kind {
+        "payment_intent.succeeded" => "Payment succeeded: ",
+        "charge.refunded" => "Refund: ",
+        _ => return Ok(""),
+    };
+    let o = match j.get("data").and_then(|d| d.get("object")) {
+        Some(o) => o,
+        None => return Err("missing object \"data.object\""),
+    };
+    let cents = match api::int_field(o, "amount") {
+        Some(c) => c,
+        None => return Err("missing integer field \"amount\" in data.object"),
+    };
+    if cents < 0 { return Err("amount must not be negative"); }
+    let currency = match api::str_field(o, "currency") {
+        Some(c) => c.to_uppercase(),
+        None => return Err("missing string field \"currency\" in data.object"),
+    };
+    let customer = match api::str_field(o, "customer") {
+        Some(c) => c,
+        None => return Err("missing string field \"customer\" in data.object"),
+    };
+    let sep = if kind == "charge.refunded" { " to " } else { " from " };
+    Ok(verb + dollars(cents) + " " + currency + sep + customer)
+}
+
+// 1234 as "$12.34".
+fn dollars(cents: Int) -> Str {
+    let c = cents % 100;
+    "$" + (cents / 100).to_str() + "." + (if c < 10 { "0" } else { "" }) + c.to_str()
+}
+
+// Create the table if needed and add the event: Ok(true) when it is new, Ok(false) for a replay.
+fn store(db: Db, ev: Ev, now_ms: Int) -> Result<Bool, Str> {
+    let made = db.exec("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, kind TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL, created_ms INTEGER NOT NULL)", []);
+    if made.is_err() { return Err("database error"); }
+    let status = if ev.text == "" { "stored" } else { "pending" };
+    let added = db.exec("INSERT INTO events (id, kind, text, status, attempts, created_ms) VALUES (?, ?, ?, ?, 0, ?)",
+        [SqlValue::Text(ev.id), SqlValue::Text(ev.kind), SqlValue::Text(ev.text), SqlValue::Text(status), SqlValue::Int(now_ms)]);
+    match added {
+        Ok(_) => Ok(true),
+        Err(DbErr::Constraint(_)) => Ok(false),
+        Err(_) => Err("database error"),
+    }
 }
 
 // `Stripe-Signature: t=<unix s>,v1=<hex>[,v1=<hex>..]`: some v1 must be the HMAC of "<t>.<body>",

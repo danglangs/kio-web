@@ -1,0 +1,7 @@
++ main: grant db: Db
++ main: grant log: Log
++ handle: db exec
++ main: db exec, log write
++ receive: db exec
++ store: db exec
+authority added: 6 lines (exit 3)
