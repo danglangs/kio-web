@@ -1,7 +1,3 @@
-+ main: grant db: Db
-+ main: grant log: Log
-+ handle: db exec
-+ main: db exec, log write
-+ receive: db exec
-+ store: db exec
-authority added: 6 lines (exit 3)
++ db: Db (exec)
++ log: Log (write)
+authority added (exit 3); --detail lists each function

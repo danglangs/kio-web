@@ -1,4 +1,2 @@
-+ main: grant slack: Http
-+ deliver: db exec, slack send_all
-+ main: slack send_all
-authority added: 3 lines (exit 3)
++ slack: Http (send_all)
+authority added (exit 3); --detail lists each function

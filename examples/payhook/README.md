@@ -65,42 +65,31 @@ main              : req body header_names header_values method target, res send
 **Step 2, verify signatures** ([step2.diff](steps/step2.diff)): the program can verify, and read the clock.
 
 ```
-+ main: grant stripe: Hmac
-+ main: grant now: Clock
-+ check_signature: stripe verify
-+ handle: stripe verify, now now_ms
-+ main: stripe verify, now now_ms
-+ receive: stripe verify, now now_ms
-authority added: 6 lines (exit 3)
++ stripe: Hmac (verify)
++ now: Clock (now_ms)
+authority added (exit 3); --detail lists each function
 ```
 
 **Step 3, store and dedupe** ([step3.diff](steps/step3.diff)): a database and a log.
 
 ```
-+ main: grant db: Db
-+ main: grant log: Log
-+ handle: db exec
-+ main: db exec, log write
-+ receive: db exec
-+ store: db exec
-authority added: 6 lines (exit 3)
++ db: Db (exec)
++ log: Log (write)
+authority added (exit 3); --detail lists each function
 ```
 
 **Step 4, notify chat** ([step4.diff](steps/step4.diff)): one outbound host, `send_all` only.
 
 ```
-+ main: grant slack: Http
-+ deliver: db exec, slack send_all
-+ main: slack send_all
-authority added: 3 lines (exit 3)
++ slack: Http (send_all)
+authority added (exit 3); --detail lists each function
 ```
 
 **Step 5, retry pending** ([step5.diff](steps/step5.diff)): no new grant; `main` gains `db query`, and one helper does the retrying.
 
 ```
-+ main: db query
-+ retry_pending: db exec query, slack send_all, log write
-authority added: 2 lines (exit 3)
+~ db: Db (+query)
+authority added (exit 3); --detail lists each function
 ```
 
 The final report, less the `web::` helpers and the functions with no authority:
