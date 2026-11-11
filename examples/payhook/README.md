@@ -69,10 +69,10 @@ authority added (exit 3); --detail lists each function
 authority added (exit 3); --detail lists each function
 ```
 
-**Step 4, notify chat** ([step4.diff](steps/step4.diff)): one outbound host, `send_all` only.
+**Step 4, notify chat** ([step4.diff](steps/step4.diff)): one outbound host, `send_all` of POSTs only.
 
 ```
-+ slack: Http (send_all)
++ slack: Http (send_all POST)
 authority added (exit 3); --detail lists each function
 ```
 
@@ -87,9 +87,9 @@ The final report, less the `web::` helpers and the functions with no authority:
 
 ```
 check_signature : stripe verify
-deliver         : db exec, slack send_all
-main            : req body header_names header_values method target, res send, stripe verify, now now_ms, db exec query, log write, slack send_all
-retry_pending   : db exec query, slack send_all, log write
+deliver         : db exec, slack send_all POST
+main            : req body header_names header_values method target, res send, stripe verify, now now_ms, db exec query, log write, slack send_all POST
+retry_pending   : db exec query, slack send_all POST, log write
 store           : db exec
 ```
 
@@ -127,7 +127,7 @@ payhook was written by a coding agent that read only kio's docs and kio-web; a r
 |---|---|---|
 | 2 | `stripe: Hmac` used only to `verify`; a `Clock` | Yes: no `sign`, and the run grants `:verify` |
 | 3 | a `Db` (`exec`), a `Log` | Yes |
-| 4 | `slack: Http`, `send_all` only | Yes: one host, its key injected |
+| 4 | `slack: Http`, `send_all POST` only | Yes: one host, its key injected |
 | 5 | `db query` | Yes: reading pending events back |
 
 What the diffs answered: which outside systems the code can touch, and how (verify, never sign; POST to one host). What they could not: whether the signature result is acted on, what text goes to the chat, and which rows the SQL touches. The tests carried those (124 checks). One gap neither caught: a run that dies during an event's third attempt leaves it `pending` with `attempts = 3`, never retried or marked failed.
