@@ -39,7 +39,7 @@ fn main(api: Http) -> Int {
         Ok(j) => { match j { Json::Null => {} _ => { return 13; } } }
         Err(_) => { return 14; }
     }
-    match api.send("GET", "/json", [], "".to_bytes()) {
+    match api.send("GET", "/json", [], "".to_bytes(), 0) {
         Ok(r) => {
             if http::header(r, "Content-Type").unwrap_or("") != "application/json" { return 15; }
             if http::header(r, "x-nope").is_some() { return 16; }

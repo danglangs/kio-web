@@ -14,7 +14,7 @@ pub fn json_request(api: Http, method: Str, path: Str, body: Json) -> Result<Jso
             payload = body.to_json().to_bytes();
         }
     }
-    json_response(api.send(method, path, headers, payload))
+    json_response(api.send(method, path, headers, payload, 0))
 }
 
 // One request of a `send_all`, as `json_request` builds it; `timeout_ms` 0 is the grant's timeout.
