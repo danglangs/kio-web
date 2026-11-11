@@ -1,0 +1,12 @@
+# links' grants: kio run app.kio --grants app.grants (from this directory)
+# The webhook key comes from the environment; the program never holds it.
+--kv links=links.kv
+--kv auth=auth.kv
+--dir assets=./static
+--rng links_rng
+--clock now
+--log log=links.log
+--http hook=hooks.example
+--http-methods hook=POST
+--http-header hook=Authorization:env:HOOK_AUTH
+--listen 127.0.0.1:8080

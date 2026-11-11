@@ -13,7 +13,10 @@ store=$(mktemp -d)
 pid=
 hook=
 trap 'for p in $pid $hook; do kill $p 2>/dev/null; wait $p 2>/dev/null || true; done; rm -rf "$secret" "$store" web.kio api.kio http.kio; exit $status' EXIT
-"$KIO" check app.kio >/dev/null || { echo "app.kio does not check"; "$KIO" check app.kio; exit 1; }
+"$KIO" check app.kio --grants app.grants >/dev/null || { echo "app.kio does not check with app.grants"; "$KIO" check app.kio --grants app.grants; exit 1; }
+# app.grants less the lines the test replaces (stores, the seeded slugs, the fixed clock, the log,
+# the receiver, the port): the assets and the webhook's grants come from app.grants as in production.
+grep -v -e '^--kv ' -e '^--rng ' -e '^--clock ' -e '^--log ' -e '^--http ' -e '^--listen ' app.grants >"$store/test.grants"
 token=links-token-$$-0123456789
 printf 'short\n' >"$secret/token"
 out=$("$KIO" run set_token.kio --dir secret="$secret" --kv auth="$store/auth.kv" 2>&1)
@@ -30,6 +33,7 @@ events=$store/events
 : >"$events"
 hook_key=hook-key-$$-5e1d9a07c3b2
 printf 'Bearer %s\n' "$hook_key" >"$store/hook_auth"
+export HOOK_AUTH="Bearer $hook_key"
 python3 hook.py "$hook_port" "$events" "$store/hook_auth" &
 hook=$!
 # The clock is fixed and the slugs seeded, so a run is reproducible; the restart below moves the
@@ -38,10 +42,8 @@ clock=1794225600000  # 2026-11-09T12:00:00Z
 log=$store/links.log
 
 start() {
-    "$KIO" run app.kio --kv links="$store/links.kv" --kv auth="$store/auth.kv" --dir assets=./static \
-        --rng links_rng=seed:1 --clock now=fixed:$clock --log log="$log" \
-        --http hook=http://127.0.0.1:$hook_port --http-methods hook=POST \
-        --http-header hook=Authorization:file:"$store/hook_auth" \
+    "$KIO" run app.kio --grants "$store/test.grants" --kv links="$store/links.kv" --kv auth="$store/auth.kv" \
+        --rng links_rng=seed:1 --clock now=fixed:$clock --log log="$log" --http hook=http://127.0.0.1:$hook_port \
         --audit "$store/audit.log" --listen 127.0.0.1:$port >/dev/null 2>>"$store/stderr" &
     pid=$!
     for i in $(seq 50); do

@@ -10,12 +10,15 @@ store=$(mktemp -d)
 pid=
 hook=
 trap 'for p in $pid $hook; do kill $p 2>/dev/null; wait $p 2>/dev/null || true; done; rm -rf "$store" web.kio api.kio; exit $status' EXIT
-"$KIO" check app.kio >/dev/null || { echo "app.kio does not check"; "$KIO" check app.kio; exit 1; }
+"$KIO" check app.kio --grants app.grants >/dev/null || { echo "app.kio does not check with app.grants"; "$KIO" check app.kio --grants app.grants; exit 1; }
+# app.grants less the lines the test replaces (the fixed clock, the chat stand-in, paths, the port):
+# the key's and the chat's grants come from app.grants as in production.
+grep -v -e '^--clock ' -e '^--db ' -e '^--log ' -e '^--http ' -e '^--audit ' -e '^--listen ' app.grants >"$store/test.grants"
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 port=$(free_port)
 base=http://127.0.0.1:$port
 key=whsec_test_$$_0123456789abcdef
-export PAYHOOK_WHSEC=$key
+export STRIPE_WHSEC=$key
 now_s=1794225600  # 2026-11-09T12:00:00Z, the fixed clock
 # The chat stand-in: hook.py checks the Authorization the host injects and can be told to fail.
 hook_port=$(free_port)
@@ -24,6 +27,7 @@ events=$store/chat
 : >"$events"
 hook_key=chat-key-$$-5e1d9a07c3b2
 printf 'Bearer %s\n' "$hook_key" >"$store/chat_auth"
+export CHAT_AUTH="Bearer $hook_key"
 python3 hook.py "$hook_port" "$events" "$store/chat_auth" &
 hook=$!
 for i in $(seq 50); do
@@ -33,10 +37,9 @@ done
 mode() { curl -s -o /dev/null -X POST -d "$1" $hook_url/_mode; }
 
 start() {
-    "$KIO" run app.kio --hmac stripe=env:PAYHOOK_WHSEC:verify --clock now=fixed:${now_s}000 \
-        --db db="$store/payhook.db" --log log="$store/app.log" \
-        --http slack=$hook_url --http-methods slack=POST --http-header slack=Authorization:file:"$store/chat_auth" \
-        --timeout 20 --audit "$store/audit.log" --listen 127.0.0.1:$port >/dev/null 2>>"$store/stderr" &
+    "$KIO" run app.kio --grants "$store/test.grants" --clock now=fixed:${now_s}000 \
+        --db db="$store/payhook.db" --log log="$store/app.log" --http slack=$hook_url \
+        --audit "$store/audit.log" --listen 127.0.0.1:$port >/dev/null 2>>"$store/stderr" &
     pid=$!
     for i in $(seq 50); do
         curl -s -o /dev/null $base/health && return

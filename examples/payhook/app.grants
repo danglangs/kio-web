@@ -1,0 +1,12 @@
+# payhook's grants: kio run app.kio --grants app.grants
+# The signing secret and the chat key come from the environment; the program never holds either.
+--hmac stripe=env:STRIPE_WHSEC:verify
+--clock now
+--db db=payhook.db
+--log log=payhook.log
+--http slack=https://chat.example
+--http-methods slack=POST
+--http-header slack=Authorization:env:CHAT_AUTH
+--timeout 20
+--audit audit.jsonl
+--listen 127.0.0.1:8080

@@ -13,19 +13,10 @@ A payment provider (Stripe-like) POSTs webhooks; payhook verifies them, stores e
 ## Run
 
 ```
-STRIPE_WHSEC=whsec_... CHAT_AUTH='Bearer xoxb-...' \
-kio run app.kio \
-    --hmac stripe=env:STRIPE_WHSEC:verify \
-    --clock now \
-    --db db=payhook.db \
-    --log log=payhook.log \
-    --http slack=https://chat.example --http-methods slack=POST \
-    --http-header slack=Authorization:env:CHAT_AUTH \
-    --timeout 20 --audit audit.jsonl \
-    --listen 127.0.0.1:8080
+STRIPE_WHSEC=whsec_... CHAT_AUTH='Bearer xoxb-...' kio run app.kio --grants app.grants
 ```
 
-Copy `web.kio` and `api.kio` from the kio-web root beside `app.kio` first (`test.sh` does). `--timeout 20` leaves room for the retries a request makes after it answers (each chat post is cut off at 2 s).
+[app.grants](app.grants) holds the flags, one per line, reviewed beside the code; `kio check app.kio --grants app.grants` binds them to `main` without running or reading a key, for CI. Copy `web.kio` and `api.kio` from the kio-web root beside `app.kio` first (`test.sh` does). `--timeout 20` leaves room for the retries a request makes after it answers (each chat post is cut off at 2 s).
 
 ## Behaviour
 
