@@ -1,0 +1,8 @@
+# flow worker: DEST_AUTH=<header value> kio run worker.kio --grants worker.grants
+# The destination's key is the host's: the worker never holds it.
+--db db=flow.db
+--clock now
+--http dest=https://dest.example
+--http-methods dest=POST
+--http-header dest=Authorization:env:DEST_AUTH
+--timeout 20
