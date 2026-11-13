@@ -1,0 +1,6 @@
+# flow: FLOW_KEY=... kio run app.kio --grants app.grants. The key is the host's; the program can only verify.
+--hmac key=env:FLOW_KEY:verify
+--clock now
+--db db=flow.db
+--timeout 20
+--listen 127.0.0.1:8080

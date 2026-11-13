@@ -1,0 +1,83 @@
+// The ingest logic: plain values and the capabilities it needs, so tests call it directly.
+pub fn ingest(key: Hmac, db: Db, now_ms: Int, sig: Option<Str>, body: Bytes) -> web::Response {
+    let Some(hex) = sig else { return api::error(401, "missing X-Signature header"); };
+    let Some(mac) = hex.trim().from_hex() else { return api::error(401, "bad signature"); };
+    if !key.verify(body, mac) { return api::error(401, "bad signature"); }
+    if !valid_utf8(body) { return api::error(400, "body is not UTF-8"); }
+    let j = match body.to_str().parse_json() {
+        Ok(j) => j,
+        Err(e) => return api::error(400, e),
+    };
+    let Some(id) = api::str_field(j, "id") else { return api::error(400, "missing string field \"id\""); };
+    match store(db, id, body.to_str(), now_ms) {
+        Ok(true) => accepted("accepted"),
+        Ok(false) => accepted("duplicate"),
+        Err(why) => api::error(500, why),
+    }
+}
+
+fn accepted(what: Str) -> web::Response {
+    let mut o: Map<Str, Json> = Map::new();
+    o.insert(what, Json::Bool(true));
+    api::json(if what == "accepted" { 202 } else { 200 }, Json::Obj(o))
+}
+
+// Create the table if needed and add the job: Ok(true) when new, Ok(false) when the id exists.
+// The insert is one autocommitted statement, so it is durable before this returns.
+fn store(db: Db, id: Str, body: Str, now_ms: Int) -> Result<Bool, Str> {
+    let made = db.exec("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, body TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL, received_ms INTEGER NOT NULL)", []);
+    if made.is_err() { return Err("database error"); }
+    let added = db.exec("INSERT OR IGNORE INTO jobs (id, body, state, attempts, received_ms) VALUES (?, ?, 'pending', 0, ?)",
+        [SqlValue::Text(id), SqlValue::Text(body), SqlValue::Int(now_ms)]);
+    match added {
+        Ok(n) => Ok(n == 1),
+        Err(_) => Err("database error"),
+    }
+}
+
+// The job rows as text lines, in arrival order. Empty before the table exists.
+pub fn rows(db: Db) -> List<Str> {
+    let found = db.query("SELECT id, body, state, attempts, received_ms FROM jobs ORDER BY rowid", []);
+    let Ok(rs) = found else { return []; };
+    rs.map(|r| text_of(r[0]) + "|" + text_of(r[1]) + "|" + text_of(r[2]) + "|" + int_of(r[3]).to_str() + "|" + int_of(r[4]).to_str())
+}
+
+fn text_of(v: SqlValue) -> Str {
+    match v { SqlValue::Text(s) => s, _ => "" }
+}
+
+fn int_of(v: SqlValue) -> Int {
+    match v { SqlValue::Int(n) => n, _ => 0 }
+}
+
+
+// Bytes.to_str stops the whole run on invalid UTF-8 and kio has no checked version, so a signed
+// body is validated first (as Rust's str::from_utf8: no overlong forms, surrogates or > U+10FFFF).
+fn valid_utf8(b: Bytes) -> Bool {
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        let c = b[i];
+        if c < 128 { i += 1; continue; }
+        let mut extra = 0;
+        let mut lo = 128;
+        let mut hi = 191;
+        if c >= 194 && c <= 223 { extra = 1; }
+        else if c >= 224 && c <= 239 {
+            extra = 2;
+            if c == 224 { lo = 160; }
+            if c == 237 { hi = 159; }
+        } else if c >= 240 && c <= 244 {
+            extra = 3;
+            if c == 240 { lo = 144; }
+            if c == 244 { hi = 143; }
+        } else { return false; }
+        if i + extra >= n { return false; }
+        if b[i + 1] < lo || b[i + 1] > hi { return false; }
+        for k in 2..extra + 1 {
+            if b[i + k] < 128 || b[i + k] > 191 { return false; }
+        }
+        i += extra + 1;
+    }
+    true
+}
