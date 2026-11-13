@@ -35,7 +35,6 @@ flow::int_of      : none
 flow::rows        : db query
 flow::store       : db exec
 flow::text_of     : none
-flow::valid_utf8  : none
 main              : req body header_names header_values method target, res send, key verify, now now_ms, db exec
 tests::body_of    : none
 tests::gen_body   : none
@@ -120,7 +119,7 @@ ok   tests::signed_non_utf8_body_is_400
 
 Every place kio made this harder than it should be, and what I did.
 
-1. **A signed non-UTF-8 body stops the run.** `Bytes.to_str` has no checked form, so `to_str` on such a body is a runtime error: the client gets a 500 with an empty body. Workaround: a 28-line `valid_utf8` in `flow.kio`, plus a property that feeds arbitrary signed bytes. Wanted: `Bytes.to_str_checked() -> Option<Str>` (or `Result`).
+1. **A signed non-UTF-8 body stopped the run.** `Bytes.to_str` had no checked form, so the client got a 500 with an empty body. Workaround was a 28-line `valid_utf8` in `flow.kio`. **Resolved** by kio L27 (v0.1.1): `body.try_to_str()` returns `None`, answered 400; the property that feeds arbitrary signed bytes still runs.
 2. **`mod` loads files only from beside the root.** `web.kio` and `api.kio` must be copied next to `app.kio` (`test.sh` does, and deletes them); `kio test`/`kio check` fail with "cannot read web.kio" until then. Workaround: `cp`, and a `.gitignore`.
 3. **Tests make the authority report noisy and the module list longer.** Tests must be in a module declared by the root (`mod tests;`) to be found without being in `main`'s file; the report then lists test helpers (`tests::sig_of : key sign`) beside real authority, and 40 lines of unused `web::`/`api::` functions drown the 8 that matter. Workaround: none; read the `flow::` and `main` lines. Wanted: a report that leaves out functions `main` cannot reach, or tests' helpers marked.
 4. **`:verify` and tests need two grants files.** A test cannot sign with the production grant, which is the point, but there is no way to say "this grant, but signing, for tests" in `app.grants`. Workaround: `test.grants` with the same key variable minus `:verify`, kept in sync by hand. The key also has to be in the environment for `kio test`.
