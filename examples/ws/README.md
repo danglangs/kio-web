@@ -3,7 +3,6 @@
 A WebSocket app in kio-web, routed by the upgrade request's path and open only to clients holding a token.
 
 ```
-cp ../../web.kio .
 echo my-token > secret/token
 kio run set_token.kio --dir secret=./secret --kv auth=auth.kv
 kio run app.kio --kv auth=auth.kv --kv counts=:memory: --listen 127.0.0.1:8080

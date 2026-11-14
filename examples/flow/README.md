@@ -78,7 +78,6 @@ web::ws_bearer    : msg header
 ## Run
 
 ```
-cp ../../web.kio ../../api.kio .      # mod web; mod api; load files beside app.kio
 FLOW_KEY=<secret> kio run app.kio --grants app.grants
 curl -X POST localhost:8080/events -H "X-Signature: $(python3 sign.py "$FLOW_KEY" "$body")" -d "$body"
 ```

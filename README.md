@@ -26,7 +26,7 @@ main              : req body header_names header_values method target, res send,
 
 ## Use
 
-kio has no package manager: copy [web.kio](web.kio) beside your app and write `mod web;`.
+Write `mod web;` and list [web.kio](web.kio) in a `kio.deps` beside your app: a line `web  path/to/web.kio`, then `kio deps pin app.kio` adds its sha256, and kio refuses a web.kio that no longer matches (kio guide, Dependencies). Each example here ships one. Needs kio 0.1.2 or later (or kio built from main); with 0.1.1, copy the module beside your app instead.
 
 | Function | Does |
 |---|---|
@@ -97,7 +97,7 @@ Migrating from json.kio (removed): delete `mod json;` and the copy of json.kio, 
 
 ## API helpers
 
-Copy [api.kio](api.kio) too and declare `mod web; mod api;`. It builds on web.kio and the built-in `Json`; an app that uses only web.kio does not need api.kio.
+List [api.kio](api.kio) too and declare `mod web; mod api;`. It builds on web.kio and the built-in `Json`; an app that uses only web.kio does not need api.kio.
 
 | Function | Does |
 |---|---|
@@ -143,7 +143,7 @@ The upgrade is answered before `main` runs, so a refused client is closed (here 
 
 ## HTTP client
 
-Copy [http.kio](http.kio) and declare `mod http;` to call an API from a program or a handler; it needs no web.kio. The operator grants the host with `--http api=api.example` (GET only) and the other methods with `--http-methods api=POST,PUT,DELETE`; the program can reach nothing else, and kio's audit log records each call's method, path, status and header names, never a header value.
+List [http.kio](http.kio) in `kio.deps` and declare `mod http;` to call an API from a program or a handler; it needs no web.kio. The operator grants the host with `--http api=api.example` (GET only) and the other methods with `--http-methods api=POST,PUT,DELETE`; the program can reach nothing else, and kio's audit log records each call's method, path, status and header names, never a header value.
 
 | Function | Does |
 |---|---|

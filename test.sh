@@ -3,10 +3,8 @@
 set -e
 KIO=${KIO:-kio}
 cd "$(dirname "$0")"
-for dir in tests examples/hello; do cp web.kio "$dir/web.kio"; done
-cp api.kio http.kio tests/
 server=
-trap 'if [ -n "$server" ]; then kill $server 2>/dev/null; wait $server 2>/dev/null || true; fi; rm -f tests/web.kio tests/api.kio tests/http.kio examples/hello/web.kio' EXIT
+trap 'if [ -n "$server" ]; then kill $server 2>/dev/null; wait $server 2>/dev/null || true; fi' EXIT
 for t in web api; do
     out=$("$KIO" run tests/${t}_test.kio | tail -1)
     [ "$out" = "0" ] || { echo "$t tests failed: check $out"; exit 1; }

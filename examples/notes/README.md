@@ -3,7 +3,6 @@
 A JSON notes API over one granted `Dir`, in kio-web. [../kvnotes](../kvnotes) is the same API over `Kv`.
 
 ```
-cp ../../web.kio ../../api.kio .
 kio run app.kio --dir notes=./data --listen 127.0.0.1:8080
 ```
 

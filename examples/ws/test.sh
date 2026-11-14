@@ -4,11 +4,10 @@ set -e
 status=1
 KIO=${KIO:-kio}
 cd "$(dirname "$0")"
-cp ../../web.kio .
 secret=$(mktemp -d)  # the token file; the store must be outside any granted Dir
 store=$(mktemp -d)
 pid=
-trap 'if [ -n "$pid" ]; then kill $pid 2>/dev/null; wait $pid 2>/dev/null || true; fi; rm -rf "$secret" "$store" web.kio; exit $status' EXIT
+trap 'if [ -n "$pid" ]; then kill $pid 2>/dev/null; wait $pid 2>/dev/null || true; fi; rm -rf "$secret" "$store"; exit $status' EXIT
 "$KIO" check app.kio >/dev/null || { echo "app.kio does not check"; "$KIO" check app.kio; exit 1; }
 token=t0k3n-$$
 printf '%s\n' "$token" >"$secret/token"

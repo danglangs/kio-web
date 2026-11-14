@@ -3,7 +3,6 @@
 A link shortener for a small team, in kio-web: a JSON API behind a bearer token, redirects that count hits, links that can expire, and an HTML page of the top links. Links and counts live in a `Kv` file, so they survive restarts; random slugs come from an `Rng`, timestamps from a `Clock`, creates and deletes go to a `Log`, and each create is announced to a webhook over an `Http` grant.
 
 ```
-cp ../../web.kio ../../api.kio ../../http.kio .
 echo a-long-random-team-token > secret/token
 kio run set_token.kio --dir secret=./secret --kv auth=auth.kv
 HOOK_AUTH='Bearer ...' kio run app.kio --grants app.grants

@@ -7,12 +7,11 @@ set -e
 status=1
 KIO=${KIO:-kio}
 cd "$(dirname "$0")"
-cp ../../web.kio ../../api.kio ../../http.kio .
 secret=$(mktemp -d)  # the token file; the stores must be outside any granted Dir
 store=$(mktemp -d)
 pid=
 hook=
-trap 'for p in $pid $hook; do kill $p 2>/dev/null; wait $p 2>/dev/null || true; done; rm -rf "$secret" "$store" web.kio api.kio http.kio; exit $status' EXIT
+trap 'for p in $pid $hook; do kill $p 2>/dev/null; wait $p 2>/dev/null || true; done; rm -rf "$secret" "$store"; exit $status' EXIT
 "$KIO" check app.kio --grants app.grants >/dev/null || { echo "app.kio does not check with app.grants"; "$KIO" check app.kio --grants app.grants; exit 1; }
 # app.grants less the lines the test replaces (stores, the seeded slugs, the fixed clock, the log,
 # the receiver, the port): the assets and the webhook's grants come from app.grants as in production.

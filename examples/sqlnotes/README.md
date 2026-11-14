@@ -3,7 +3,6 @@
 The [notes](../notes) API over one granted `Db` (SQLite) instead of a `Dir` or `Kv`, in kio-web. Same routes, same responses.
 
 ```
-cp ../../web.kio ../../api.kio .
 kio run app.kio --db notes=:memory: --listen 127.0.0.1:8080
 ```
 

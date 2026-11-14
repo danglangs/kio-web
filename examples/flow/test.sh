@@ -7,11 +7,10 @@ set -e
 status=1
 KIO=${KIO:-kio}
 cd "$(dirname "$0")"
-cp ../../web.kio ../../api.kio .
 store=$(mktemp -d)
 pid=
 dest=
-trap 'for p in $pid $dest; do kill $p 2>/dev/null; wait $p 2>/dev/null || true; done; rm -rf "$store" web.kio api.kio; exit $status' EXIT
+trap 'for p in $pid $dest; do kill $p 2>/dev/null; wait $p 2>/dev/null || true; done; rm -rf "$store"; exit $status' EXIT
 export FLOW_KEY=flow_test_$$_0123456789abcdef
 key=$FLOW_KEY
 "$KIO" check app.kio --grants app.grants >/dev/null || { "$KIO" check app.kio --grants app.grants; exit 1; }
