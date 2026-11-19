@@ -2,7 +2,7 @@
 // The grant is `--http api=host` for GET and `--http-methods api=POST,PUT,DELETE` for the rest.
 
 // Send `body` as JSON (nothing for `Json::Null`) with `method` to `path` on `api`, and parse the
-// response as JSON. An error is the failure (`"denied: .."`, `"timeout"`, ..), a non-2xx status
+// response as JSON. An error is the failure (`"denied: .."`, `"unreachable: .."`, `"timeout"`, ..), a non-2xx status
 // with the start of its body (`"status 404: {\"error\":\"no such thing\"}"`) or the parse error.
 pub fn json_request(api: Http, method: Str, path: Str, body: Json) -> Result<Json, Str> {
     let mut headers = ["accept: application/json"];
@@ -57,7 +57,8 @@ pub fn header(r: HttpResponse, name: Str) -> Option<Str> {
 // An `HttpErr` as text.
 pub fn describe(e: HttpErr) -> Str {
     match e {
-        HttpErr::Denied => "denied: the host, method or path is not granted",
+        HttpErr::Denied => "denied: the host, method or path is outside the grant",
+        HttpErr::Unreachable => "unreachable: the connection failed (a retry may succeed)",
         HttpErr::Timeout => "timeout",
         HttpErr::TooLarge => "too large: the request body is over 8 MB or the response over 10 MB",
         HttpErr::Invalid => "invalid: a bad method or header",

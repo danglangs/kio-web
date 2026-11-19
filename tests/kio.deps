@@ -1,4 +1,4 @@
 # kio-web's library files this directory's programs load (kio.deps: kio guide, Dependencies)
 web  ../web.kio  sha256:a3e9ee9a82f8fd1da56a2ffbc62496316f64e42d090650bb51eff810c42a8c67
 api  ../api.kio  sha256:5f6ca38f4c7761739b2ef24b50ad56cfca6ca41ae539eb04a9ee6cb11081356b
-http  ../http.kio  sha256:3c8ce0cea52c8f72230e4de304d7ecea4cc10e83784aa318a03a472445c342b7
+http  ../http.kio  sha256:3d2808716e659ee0bd450d65078b28dacb2a82222faac0a5bc7262724aeb1123

@@ -147,7 +147,7 @@ List [http.kio](http.kio) in `kio.deps` and declare `mod http;` to call an API f
 
 | Function | Does |
 |---|---|
-| `json_request(api, method, path, body)` | send `body` as JSON (`Json::Null` sends none) and parse the response: `Ok(Json)` for a 2xx (an empty body is `Json::Null`), or `Err(Str)` naming the status with the start of the body, the failure (`"denied: .."`, `"timeout"`) or the parse error |
+| `json_request(api, method, path, body)` | send `body` as JSON (`Json::Null` sends none) and parse the response: `Ok(Json)` for a 2xx (an empty body is `Json::Null`), or `Err(Str)` naming the status with the start of the body, the failure (`"denied: .."`, `"unreachable: .."`, `"timeout"`) or the parse error |
 | `json_req(method, path, body, timeout_ms)`, `json_response(r)` | the same for `api.send_all`: build each request, read each result |
 | `header(r, name)` | a response header's value, the name in any case |
 | `describe(e)` | an `HttpErr` as text |
