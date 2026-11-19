@@ -10,7 +10,9 @@ kio run app.kio --db notes=:memory: --listen 127.0.0.1:8080
 
 ```
 $ kio check app.kio | grep -v ': none'
-main, handle, create, show, list, replace, delete : notes exec query
+main, handle : notes exec exec_rows query
+create, replace, delete : notes exec_rows
+list, show : notes query
 ```
 
 The app can run statements on that database. It cannot attach another file, change the connection's settings, load an extension or touch anything else; the host refuses those statements as `Denied`.

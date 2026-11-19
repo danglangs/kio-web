@@ -64,7 +64,7 @@ fn row_note(row: List<SqlValue>) -> Option<Json> {
     Some(note(id, text(row[1])?, text(row[2])?))
 }
 
-// A query that returns the note it touched: the note, 404 if no row came back.
+// A write that returns the note it touched: the note, 404 if no row came back.
 fn one(r: Result<List<List<SqlValue>>, DbErr>, id: Str, status: Int) -> web::Response {
     match r {
         Ok(rows) => match api::first(rows).and_then(row_note) {
@@ -82,7 +82,7 @@ fn create(r: web::Request, notes: Db) -> web::Response {
         Err(e) => return e,
     };
     let sql = "INSERT INTO notes (title, body) VALUES (?, ?) RETURNING id, title, body";
-    one(notes.query(sql, [param(f[0]), param(f[1])]), "", 201)
+    one(notes.exec_rows(sql, [param(f[0]), param(f[1])]), "", 201)
 }
 
 fn show(notes: Db, id: Str) -> web::Response {
@@ -117,7 +117,7 @@ fn replace(r: web::Request, notes: Db, id: Str) -> web::Response {
         Err(e) => return e,
     };
     let sql = "UPDATE notes SET title = ?, body = ? WHERE id = ? RETURNING id, title, body";
-    one(notes.query(sql, [param(f[0]), param(f[1]), SqlValue::Int(n)]), id, 200)
+    one(notes.exec_rows(sql, [param(f[0]), param(f[1]), SqlValue::Int(n)]), id, 200)
 }
 
 // DELETE /notes/:id
@@ -126,7 +126,7 @@ fn delete(notes: Db, id: Str) -> web::Response {
         Ok(n) => n,
         Err(e) => return e,
     };
-    match notes.query("DELETE FROM notes WHERE id = ? RETURNING id", [SqlValue::Int(n)]) {
+    match notes.exec_rows("DELETE FROM notes WHERE id = ? RETURNING id", [SqlValue::Int(n)]) {
         Ok(rows) => if rows.len() == 0 { api::error(404, "no note " + id) } else { web::respond(204, "text/plain", "".to_bytes()) },
         Err(e) => db_error(e),
     }
