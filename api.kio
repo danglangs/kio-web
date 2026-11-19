@@ -68,9 +68,10 @@ pub fn flatten<T>(xs: List<Option<T>>) -> List<T> {
 pub struct Page<T> { items: List<T>, total: Int, offset: Int, limit: Int }
 
 // The page of `xs` that the query parameters `offset` (default 0) and `limit` (default 50, at
-// most 500) ask for, or a 400 naming a value that is not a non-negative integer (or a limit over 500).
+// most 500) ask for, or a 400 naming a value that is not a non-negative integer (or a limit over 500),
+// or a query that is not UTF-8 once decoded.
 pub fn page<T>(xs: List<T>, r: web::Request) -> Result<Page<T>, web::Response> {
-    let q = web::query(r);
+    let q = web::query(r).ok_or(error(400, "query is not valid UTF-8"))?;
     let offset = count(q, "offset", 0, 1000000000)?;
     let limit = count(q, "limit", 50, 500)?;
     let items = xs.slice(offset.min(xs.len()), (offset + limit).min(xs.len()));

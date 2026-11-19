@@ -33,12 +33,12 @@ Write `mod web;` and list [web.kio](web.kio) in a `kio.deps` beside your app: a 
 | `request(req)`, `send(res, r)` | convert between the host's raw parts and `Request` / `Response` |
 | `route(r, method, pattern)` | match `"/hello/:name"` or `"/static/*path"`; `Some(params)` keyed by `":name"` / `"*path"` |
 | `get`, `post`, `put`, `delete`, `protected(route)`, `dispatch(routes, r)`, `dispatch_as(routes, r, authorized)`, `param(m, name)` | a route table; see Routing |
-| `query(r)`, `decode(s)` | query parameters, percent-decoded |
+| `query(r)`, `decode(s)` | query parameters, form-decoded (`+` is a space, `a=b=c` is `a` = `"b=c"`, a bare `flag` is `""`); `None` when one is not UTF-8 (`%ff`): answer 400 |
 | `header(r, name)`, `bearer(r)` | a header value (names are lowercase); the `authorization: Bearer` token |
 | `unauthorized()` | a 401 with `www-authenticate: Bearer` |
 | `text`, `json`, `html`, `respond`, `not_found`, `redirect(status, location)` | build responses |
 | `html_escape(s)` | `s` safe in HTML text and quoted attributes (`& < > " '`) |
-| `json_str(s)` | a JSON string literal |
+| `json_str(s)` | a JSON string literal (`Json::Str(s).to_json()`: quotes, backslashes and control bytes escaped) |
 | `file(dir, name)` | serve a file from a granted `Dir`; a `..` segment is a 404 |
 | `upgrade(msg)`, `ws_bearer(msg)` | a WebSocket's upgrade request as a `Request`; its `authorization: Bearer` token; see WebSockets |
 
@@ -107,7 +107,7 @@ List [api.kio](api.kio) too and declare `mod web; mod api;`. It builds on web.ki
 | `str_field(j, key)`, `int_field(j, key)` | an object field, if present with that type |
 | `int_param(s, what)` | `s` as `Ok(Int)`, or a 400 saying `what` must be an integer |
 | `first(xs)`, `flatten(opts)` | the first element; the present values of a `List<Option<T>>` |
-| `page(xs, r)` | `Ok(Page<T> { items, total, offset, limit })` from the query's `offset` (default 0) and `limit` (default 50, at most 500), or a 400 for a negative or non-integer value or a limit over 500 |
+| `page(xs, r)` | `Ok(Page<T> { items, total, offset, limit })` from the query's `offset` (default 0) and `limit` (default 50, at most 500), or a 400 for a negative or non-integer value, a limit over 500, or a query that is not UTF-8 |
 | `str_fields(r, keys)` | the body's string fields in order as `Ok(List<Str>)`, or a 400 naming the bad JSON or missing field |
 
 ```rust

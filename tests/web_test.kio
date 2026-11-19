@@ -29,10 +29,10 @@ fn main() -> Int {
         None => {}
     }
     // query and percent-decoding.
-    let q = web::query(req("GET", "/", "name=a%20b&x=1+2"));
+    let q = web::query(req("GET", "/", "name=a%20b&x=1+2")).unwrap_or(Map::new());
     if q.get("name").unwrap_or("") != "a b" { return 5; }
     if q.get("x").unwrap_or("") != "1 2" { return 6; }
-    if web::decode("%41%zz%4") != "A%zz%4" { return 7; }
+    if web::decode("%41%zz%4").unwrap_or("") != "A%zz%4" { return 7; }
     // JSON escaping.
     if web::json_str("a\"b\\c") != "\"a\\\"b\\\\c\"" { return 8; }
     // responses.
@@ -121,4 +121,73 @@ fn main() -> Int {
     match web::dispatch_as(mixed, req("GET", "/nope/x", ""), false) { Ok(None) => {} _ => { return 54; } }
     match web::dispatch(mixed, req("POST", "/p", "")) { Some(_) => { return 55; } None => {} }
     0
+}
+
+fn query_of(q: Str) -> Option<Map<Str, Str>> {
+    web::query(req("GET", "/", q))
+}
+
+#[test]
+fn decode_refuses_non_utf8() -> Result<(), Str> {
+    if web::decode("%ff").is_some() { return Err("%ff decoded"); }
+    if web::decode("a%C3").is_some() { return Err("a truncated UTF-8 sequence decoded"); }
+    if web::decode("%C3%A9").unwrap_or("") != "é" { return Err("%C3%A9 is not é"); }
+    Ok(())
+}
+
+#[test]
+fn decode_keeps_malformed_escapes() -> Result<(), Str> {
+    if web::decode("%").unwrap_or("?") != "%" { return Err("lone %"); }
+    if web::decode("50%").unwrap_or("?") != "50%" { return Err("trailing %"); }
+    if web::decode("%4").unwrap_or("?") != "%4" { return Err("one hex digit"); }
+    if web::decode("%g1%1g").unwrap_or("?") != "%g1%1g" { return Err("non-hex digit"); }
+    if web::decode("%%41").unwrap_or("?") != "%A" { return Err("%% then an escape"); }
+    if web::decode("%2B+%2b").unwrap_or("?") != "+ +" { return Err("%2B is a plus, + a space"); }
+    Ok(())
+}
+
+#[test]
+fn query_splits_at_first_eq() -> Result<(), Str> {
+    let q = query_of("a=b=c&e=").ok_or("query refused")?;
+    if q.get("a").unwrap_or("?") != "b=c" { return Err("a=b=c"); }
+    if q.get("e").unwrap_or("?") != "" { return Err("e= is empty"); }
+    Ok(())
+}
+
+#[test]
+fn query_keeps_bare_flags() -> Result<(), Str> {
+    let q = query_of("flag&&x=1&").ok_or("query refused")?;
+    if q.get("flag").unwrap_or("?") != "" { return Err("bare flag"); }
+    if q.get("x").unwrap_or("?") != "1" { return Err("x after empty pairs"); }
+    if q.get("").is_some() { return Err("empty pairs make an empty name"); }
+    if query_of("").ok_or("refused")?.len() != 0 { return Err("empty query"); }
+    Ok(())
+}
+
+#[test]
+fn query_decodes_names_and_values() -> Result<(), Str> {
+    let q = query_of("a+b=c+d&%3D=%26&x=1&x=2").ok_or("query refused")?;
+    if q.get("a b").unwrap_or("?") != "c d" { return Err("+ in name and value"); }
+    if q.get("=").unwrap_or("?") != "&" { return Err("escaped = and &"); }
+    if q.get("x").unwrap_or("?") != "2" { return Err("last value wins"); }
+    Ok(())
+}
+
+#[test]
+fn query_refuses_non_utf8() -> Result<(), Str> {
+    if query_of("q=%ff").is_some() { return Err("value %ff"); }
+    if query_of("%ff=1").is_some() { return Err("name %ff"); }
+    if query_of("%ff").is_some() { return Err("bare %ff"); }
+    Ok(())
+}
+
+#[test]
+fn json_str_escapes_control_bytes() -> Result<(), Str> {
+    if web::json_str("a\nb\tc\r\0") != "\"a\\nb\\tc\\u000d\\u0000\"" { return Err(web::json_str("a\nb\tc\r\0")); }
+    let s = "q\"b\\ \n\0\ré";
+    match web::json_str(s).parse_json() {
+        Ok(Json::Str(back)) => if back != s { return Err("round trip"); },
+        _ => { return Err("not a JSON string"); }
+    }
+    Ok(())
 }

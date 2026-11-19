@@ -162,18 +162,24 @@ pub fn param<A>(m: Matched<A>, name: Str) -> Str {
     }
 }
 
-// Query parameters, percent-decoded.
-pub fn query(r: Request) -> Map<Str, Str> {
+// Query parameters, form-decoded: each `&`-separated pair splits at its first `=` (`a=b=c` is
+// `a` = "b=c"; a bare `flag` is "flag" = ""), and `decode` decodes both sides. A repeated name
+// keeps its last value. None when a name or value decodes to bytes that are not UTF-8 (a 400).
+pub fn query(r: Request) -> Option<Map<Str, Str>> {
     let mut m: Map<Str, Str> = Map::new();
     for pair in r.query.split("&") {
-        let kv = pair.split("=");
-        if kv.len() == 2 { m.insert(decode(kv[0]), decode(kv[1])); }
+        if pair == "" { continue; }
+        match pair.find("=") {
+            Some(i) => m.insert(decode(pair.slice(0, i))?, decode(pair.slice(i + 1, pair.len()))?),
+            None => m.insert(decode(pair)?, ""),
+        }
     }
-    m
+    Some(m)
 }
 
-// Percent-decode `s`; `+` becomes a space. Malformed escapes are kept as written.
-pub fn decode(s: Str) -> Str {
+// Percent-decode `s`; `+` becomes a space. A `%` not followed by two hex digits is kept as
+// written. None when the result is not UTF-8 (`%ff`): treat it as a bad request.
+pub fn decode(s: Str) -> Option<Str> {
     let b = s.to_bytes();
     let mut out = "".to_bytes();
     let mut i = 0;
@@ -195,7 +201,7 @@ pub fn decode(s: Str) -> Str {
             i += 1;
         }
     }
-    out.to_str()
+    out.try_to_str()
 }
 
 // The byte encoded by the two hex digits at b[i], b[i + 1].
@@ -213,17 +219,9 @@ fn digit(c: Int) -> Option<Int> {
     None
 }
 
-// A JSON string literal for `s`, quotes and backslashes escaped.
+// A JSON string literal for `s`: quotes, backslashes and control bytes escaped.
 pub fn json_str(s: Str) -> Str {
-    let b = s.to_bytes();
-    let mut out = "\"".to_bytes();
-    for i in 0..b.len() {
-        let c = b[i];
-        if c == 34 || c == 92 { out.push(92); }
-        out.push(c);
-    }
-    out.push(34);
-    out.to_str()
+    Json::Str(s).to_json()
 }
 
 // `s` with `& < > " '` written as entities, safe inside HTML text and quoted attribute values.

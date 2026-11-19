@@ -8,6 +8,7 @@ trap 'if [ -n "$server" ]; then kill $server 2>/dev/null; wait $server 2>/dev/nu
 for t in web api; do
     out=$("$KIO" run tests/${t}_test.kio | tail -1)
     [ "$out" = "0" ] || { echo "$t tests failed: check $out"; exit 1; }
+    "$KIO" test tests/${t}_test.kio >/dev/null || { "$KIO" test tests/${t}_test.kio; exit 1; }
 done
 # http.kio against a local JSON server.
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')

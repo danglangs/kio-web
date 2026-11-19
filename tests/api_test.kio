@@ -108,3 +108,12 @@ fn main() -> Int {
     }
     0
 }
+
+#[test]
+fn page_refuses_non_utf8_query() -> Result<(), Str> {
+    let xs = [1, 2, 3];
+    match api::page(xs, get("q=%ff&limit=2")) {
+        Ok(_) => Err("a query that is not UTF-8 was paged"),
+        Err(x) => if x.status == 400 && x.body.to_str().contains("query is not valid UTF-8") { Ok(()) } else { Err(x.body.to_str()) },
+    }
+}
