@@ -232,7 +232,7 @@ ok   tests::stale_completion_changes_nothing  (100 cases compiled; seed 1)
 The four checks this section once listed by hand are [flow.mutants](flow.mutants), each a function, what the mutant breaks and one `-`/`+` edit: the done update ignoring the lease, no `Idempotency-Key` header, the claim `UPDATE` without its conditions, and `>` for `>=` on the limit. `kio review` applies each to `flow.kio`, runs the tests that reach it, and names the test that failed (needs kio after 0.1.4, or kio built from main):
 
 ```
-$ FLOW_KEY=test-key kio review app.kio --base app.kio --test-grants test.grants --mutations flow.mutants --mutants 0
+$ FLOW_KEY=test-key kio review worker.kio --base worker.kio --test-grants test.grants --mutations flow.mutants --mutants 0
   ...
   tested       mutants: 4 of 4 killed (flow.mutants (inside NEW's tree) 4 of 4)
   tested       killed by: tests::a_claim_needs_the_job_still_due_and_unchanged 1, tests::every_attempt_carries_the_event_id_as_the_key 1, tests::expired_lease_is_reclaimed_and_the_old_worker_changes_nothing 1, tests::failure_retries_with_doubling_backoff_then_dies 1
