@@ -229,6 +229,132 @@ ok   tests::stale_completion_changes_nothing  (100 cases compiled; seed 1)
 
 ## Mutation checks
 
+The four checks this section once listed by hand are [flow.mutants](flow.mutants), each a function, what the mutant breaks and one `-`/`+` edit: the done update ignoring the lease, no `Idempotency-Key` header, the claim `UPDATE` without its conditions, and `>` for `>=` on the limit. `kio review` applies each to `flow.kio`, runs the tests that reach it, and names the test that failed (needs kio after 0.1.4, or kio built from main):
+
+```
+$ FLOW_KEY=test-key kio review app.kio --base app.kio --test-grants test.grants --mutations flow.mutants --mutants 0
+  ...
+  tested       mutants: 4 of 4 killed (flow.mutants (inside NEW's tree) 4 of 4)
+  tested       killed by: tests::a_claim_needs_the_job_still_due_and_unchanged 1, tests::every_attempt_carries_the_event_id_as_the_key 1, tests::expired_lease_is_reclaimed_and_the_old_worker_changes_nothing 1, tests::failure_retries_with_doubling_backoff_then_dies 1
+```
+
+The same program on both sides, so the page holds only the tests and the mutants; in a real review, `--base` is the old version and generated mutants run too. A mutant no test kills is `survived:` and exit 3. Beyond `kio test`, `test.sh` also catches the missing header ("e1 body": the destination logged no key) and a claim without its conditions ("all attempted once between them": 11, not 10). A fifth mutant, `<=` for `<` only in the claim's `SELECT`, is not caught and cannot matter: `try_claim` re-checks the limit.
+
+## Friction
+
+Every place kio made this harder than it should be, and what I did.
+
+1. **A signed non-UTF-8 body stopped the run.** `Bytes.to_str` had no checked form, so the client got a 500 with an empty body. Workaround was a 28-line `valid_utf8` in `flow.kio`. **Resolved** by kio L27 (v0.1.1): `body.try_to_str()` returns `None`, answered 400; the property that feeds arbitrary signed bytes still runs.
+2. **`mod` loads files only from beside the root.** `web.kio` and `api.kio` must be copied next to `app.kio` (`test.sh` does, and deletes them); `kio test`/`kio check` fail with "cannot read web.kio" until then. Workaround: `cp`, and a `.gitignore`.
+3. **Tests make the authority report noisy and the module list longer.** Tests must be in a module declared by the root (`mod tests;`) to be found without being in `main`'s file; the report then lists test helpers (`tests::sig_of : key sign`) beside real authority, and 40 lines of unused `web::`/`api::` functions drown the 8 that matter. Workaround: none; read the `flow::` and `main` lines. Wanted: a report that leaves out functions `main` cannot reach, or tests' helpers marked.
+4. **`:verify` and tests need two grants files.** A test cannot sign with the production grant, which is the point, but there is no way to say "this grant, but signing, for tests" in `app.grants`. Workaround: `test.grants` with the same key variable minus `:verify`, kept in sync by hand. The key also has to be in the environment for `kio test`.
+5. **"Answered after commit" cannot be tested in kio.** A test sees one connection and no clock between `exec` and the reply, so it can show the row exists when `ingest` returns, not that the 202 was sent after it. Workaround: `test.sh` reads the file with another process the moment the 202 arrives; the ordering itself is by construction (`main` sends after `ingest` returns, and `INSERT` is one autocommitted statement per the docs).
+6. **No `\u{..}` escape in `Str` literals** ("unknown escape `\u`", hint lists `\n \r \t \0 \" \\`). Workaround: literal UTF-8 characters in the source.
+7. **No JSON object literal or builder.** Building `{"id":..,"note":..}` is `Map::new()`, an `insert` per field, `Json::Obj(..).to_json()`: five lines for two fields (`accepted`, `gen_body`).
+8. **`--listen` and `--db` in the grants file cannot be overridden on the command line** ("given in app.grants:6 and on the command line"). `test.sh` has to `grep -v` those lines out into a copy, as payhook's does, to pick a free port and a temp database.
+9. **Mutating one character of a `Str` means `slice` three ways** (`s.slice(0, i) + c + s.slice(i + 1, n)`), used to tamper a signature in the property. No `replace_at`.
+10. **A route with one fixed action is awkward in `web::dispatch`**: `enum Act { Ingest }` and `Some(_) =>` exist only to satisfy the generic router.
+11. **Formatting rows for comparison is `+` chains** (`text_of(r[0]) + "|" + ..`), since there is no `format!` and no way to compare `List<List<SqlValue>>` rows readably in `assert_eq` output except by joining them.
+
+`kio check` errors hit: 1 (the `\u` escape, item 6; its hint was clear). Other stops were not check errors: `kio test` and `kio run` failing on a missing `web.kio` (item 2, my own `cd`/copy mistakes, the message said exactly what was missing) and the `--listen` given twice (item 8, clear hint). Nothing confused me; the first `kio check` of the whole program passed with no errors, and the first `kio test` run passed 8 of 8, so I verified the tests by mutation instead of trusting them.
+
+# F1.2, Worker
+
+`kio run worker.kio` is one pass: it claims each due job with a lease, `POST`s its stored body to the destination, then marks it `done`, or schedules a retry with exponential backoff (1 s, 2 s, 4 s, ..), or marks it `dead` after 5 attempts. It prints how many jobs it attempted. kio has no sleep, so polling is running it again (cron, or a shell loop).
+
+**Delivery contract: at least once, deduplicated by the destination.** A lease cannot make an outside effect happen exactly once: the worker may POST, die before recording `done`, and the job is retried when the lease expires. So every attempt of one job sends the same `Idempotency-Key: <event id>` header, and the destination must apply a key once. This is not exactly-once; the guarantee is only as good as the destination's dedup.
+
+| Transition | Rule |
+|---|---|
+| pending / retry -> claimed | one conditional `UPDATE` (job still due, attempts still as seen): `attempts += 1`, `lease = attempts`, `lease_until = now + 3 s`. 1 row changed means this worker holds it |
+| claimed -> done / retry / dead | `WHERE id = ? AND lease = ? AND state = 'claimed'`: a worker whose lease was taken over changes nothing |
+| retry | `next_ms = now + 1 s * 2^(attempts-1)`; dead instead when `attempts >= 5` |
+| claimed, lease expired | claimable again; dead (by the next claim) if `attempts >= 5` |
+
+Schema (F1.1's table, three columns added with defaults): `lease`, `lease_until`, `next_ms`. An F1.1 database made before F1.2 has no migration. Files: [worker.kio](worker.kio) (`main`, `deliver`), [flow.kio](flow.kio) (`claim`, `try_claim`, `finish`, `backoff_ms`, `headers`: plain values and `Db`, so tests drive them), [worker.grants](worker.grants), [dest.py](dest.py) (stand-in destination for `test.sh`).
+
+The worker holds `db`, `now`, and `dest: Http` (POST only, `Authorization` injected by `--http-header dest=Authorization:env:DEST_AUTH`; the program never holds it). It has no `Incoming`, `Outgoing` or `Hmac`.
+
+## Authority
+
+`kio check worker.kio --grants worker.grants` (kio-web's `web::`/`api::` lines omitted; the report lists every function, ingest's included, though the worker never calls them):
+
+```
+deliver           : dest send POST
+flow::accepted    : none
+flow::backoff_ms  : none
+flow::claim       : db exec query
+flow::finish      : db exec
+flow::headers     : none
+flow::ingest      : key verify, db exec
+flow::init        : db exec
+flow::int_of      : none
+flow::jobs        : db query
+flow::rows        : db query
+flow::store       : db exec
+flow::text_of     : none
+flow::try_claim   : db exec query
+main              : db exec query, now now_ms, dest send POST
+tests::add        : db exec
+tests::body_of    : none
+tests::claimed    : db exec query
+tests::clamp      : none
+tests::due        : none
+tests::find       : none
+tests::gen_body   : none
+tests::job_line   : db query
+tests::key_of     : none
+tests::mline      : none
+tests::sig_of     : key sign
+tests::signed     : key sign verify, db exec
+tests::step       : db exec query
+tests::take       : none
+```
+
+`kio check worker.kio --base app.kio` (the worker against the F1.1 server; they are different programs, so this reads as the move from one to the other):
+
+```
+~ db: Db (+query)
++ dest: Http (send POST)
+- req: Incoming (body header_names header_values method target)
+- res: Outgoing (send)
+- key: Hmac (verify)
+authority added (exit 3); --detail lists each function
+```
+
+## Tests
+
+`FLOW_KEY=test-key kio test worker.kio --grants test.grants` (also `kio test app.kio`, which runs the same file). New: six example tests (one per transition and the stale, limit and key cases) and two properties against a reference model in [tests.kio](tests.kio):
+
+- `db_equals_model_and_nothing_is_stranded`: a generated list of `Ingest`, `Claim`, `Poach` (a claim of a given job and attempt count, taken or stale), `Work(job, ok, crash)` (`Crash::Never | BeforePost | AfterPost`; works on any earlier claim, so late and stale workers are included) and `Advance` (0-3 s against a 1 s lease) and a limit of 1-4. After every operation the `Db` rows equal the model's, attempts are at most the limit, and a done job's id is among the keys posted (the key is read from the real request headers). Then the clock passes every lease and backoff and the worker drains: every job is `done` or `dead`.
+- `stale_completion_changes_nothing`: a finish under an old lease, at any later time, with either result, leaves every row as it was.
+
+```
+ok   tests::a_claim_needs_the_job_still_due_and_unchanged
+ok   tests::any_signed_bytes_get_an_answer  (100 cases compiled; seed 1)
+ok   tests::bad_signature_beats_bad_json
+ok   tests::bad_signature_is_401_and_never_inserts
+ok   tests::bad_signature_never_inserts  (100 cases compiled; seed 1; 5 discarded)
+ok   tests::db_equals_model_and_nothing_is_stranded  (100 cases compiled; seed 1)
+ok   tests::every_attempt_carries_the_event_id_as_the_key
+ok   tests::expired_lease_at_the_limit_is_dead_not_stranded
+ok   tests::expired_lease_is_reclaimed_and_the_old_worker_changes_nothing
+ok   tests::failure_retries_with_doubling_backoff_then_dies
+ok   tests::malformed_json_is_400
+ok   tests::missing_signature_is_401
+ok   tests::new_event_is_202_and_a_pending_row
+ok   tests::pending_claim_done
+ok   tests::repeated_id_is_200_and_changes_nothing
+ok   tests::replay_equals_each_distinct_event_once  (100 cases compiled; seed 1)
+ok   tests::signed_non_utf8_body_is_400
+ok   tests::stale_completion_changes_nothing  (100 cases compiled; seed 1)
+18 passed, 0 failed
+```
+
+`./test.sh` adds 34 worker checks to F1.1's 27, against `dest.py` (logs every request, dedups by `Idempotency-Key`, needs the injected `Authorization`): the first pass delivers three stored jobs once each with the stored body and the granted key; a 500 retries after 1 s, again after 2 s, not before, and a retry that succeeds is `done` (3 posts, applied once); **SIGKILL of the worker while the destination holds the reply**, restart inside the lease (nothing is claimable), restart after it: the destination saw the event twice with the same key and applied it once; **two workers on one database** and ten jobs: each job is posted once and both workers did work. Dead-after-5 is tested in `kio test` only (it would take 15 s of backoff here).
+
+## Mutation checks
+
 Each applied alone to `flow.kio`, then reverted. All were caught.
 
 | Mutation | Caught by |
