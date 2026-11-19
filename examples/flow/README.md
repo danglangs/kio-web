@@ -229,7 +229,7 @@ ok   tests::stale_completion_changes_nothing  (100 cases compiled; seed 1)
 
 ## Mutation checks
 
-The four checks this section once listed by hand are [flow.mutants](flow.mutants), each a function, what the mutant breaks and one `-`/`+` edit: the done update ignoring the lease, no `Idempotency-Key` header, the claim `UPDATE` without its conditions, and `>` for `>=` on the limit. `kio review` applies each to `flow.kio`, runs the tests that reach it, and names the test that failed (needs kio after 0.1.4, or kio built from main):
+The four checks this section once listed by hand are [flow.mutants](flow.mutants), each a function, what the mutant breaks and one `-`/`+` edit: the done update ignoring the lease, no `Idempotency-Key` header, the claim `UPDATE` without its conditions, and `>` for `>=` on the limit. `kio review` applies each to `flow.kio`, runs the tests that reach it, and names the test that failed (kio 0.1.5 or later):
 
 ```
 $ FLOW_KEY=test-key kio review worker.kio --base worker.kio --test-grants test.grants --mutations flow.mutants --mutants 0
